@@ -126,6 +126,13 @@ function buildPairs(
   return [...bestByAlight.values()].sort((x, y) => x.walkMeters - y.walkMeters);
 }
 
+function isChronological(board1Eta: string | null, leg1Eta: string, leg2Eta: string): boolean {
+  if (!board1Eta) return parseEtaMs(leg1Eta) < parseEtaMs(leg2Eta);
+  return (
+    parseEtaMs(board1Eta) < parseEtaMs(leg1Eta) && parseEtaMs(leg1Eta) < parseEtaMs(leg2Eta)
+  );
+}
+
 async function scoreCandidate(params: {
   leg1: RouteRef;
   leg2: RouteRef;
@@ -137,26 +144,48 @@ async function scoreCandidate(params: {
 }): Promise<TransferCandidate> {
   const { leg1, leg2, pair, bufferMinutes, board1, board1Eta, nowMs } = params;
 
+  const miss = (scoreTc: string, leg1Eta: string | null = null): TransferCandidate => ({
+    alight1: pair.alight1,
+    board2: pair.board2,
+    walkMeters: pair.walkMeters,
+    walkMinutes: pair.walkMinutes,
+    hasMatch: false,
+    waitMinutes: null,
+    gapMinutes: null,
+    board1Eta,
+    leg1Eta,
+    leg2Eta: null,
+    readyAt: null,
+    board2InMinutes: null,
+    scoreTc,
+  });
+
   const [etas1Raw, etas2] = await Promise.all([
     listEtas(leg1.co, leg1.route, pair.alight1.stopId, leg1.serviceType),
     listEtas(leg2.co, leg2.route, pair.board2.stopId, leg2.serviceType),
   ]);
 
-  // Rough ride time so alight ETA is after the bus you boarded at board1.
+  // Only use alight ETAs that can belong to the bus you board at board1.
+  // (Open ETA has no trip id, so we approximate with min ride time by stop gap.)
   const stopGap = Math.max(1, pair.alight1.seq - board1.seq);
-  const minRideMinutes = Math.max(2, Math.round(stopGap * 1.6));
+  const minRideMinutes = Math.max(3, Math.round(stopGap * 1.8));
   const earliestAlightMs = board1Eta
     ? parseEtaMs(board1Eta) + minRideMinutes * 60_000
     : nowMs;
 
   const etas1 = etas1Raw.filter((e) => parseEtaMs(e.eta) >= earliestAlightMs);
+  if (!etas1.length) {
+    return miss(
+      `轉車步行 ${pair.walkMeters}m · 未見第一程落車 ETA（可能仲未入到顯示範圍）`,
+    );
+  }
 
   const matched = matchTransfer({
     leg1: {
       ...leg1,
       stopId: pair.alight1.stopId,
       stopNameTc: pair.alight1.nameTc,
-      etas: etas1.length ? etas1 : etas1Raw,
+      etas: etas1,
     },
     leg2: {
       ...leg2,
@@ -168,30 +197,34 @@ async function scoreCandidate(params: {
     bufferMinutes,
   });
 
-  const best = matched.pairs.find((p) => p.status !== "miss") ?? null;
-  const board2InMinutes = minutesFromNow(best?.leg2Eta ?? null, nowMs);
+  // Never accept a chain that goes backwards in time (e.g. board2 before board1).
+  const best =
+    matched.pairs.find(
+      (p) =>
+        p.status !== "miss" &&
+        !!p.leg2Eta &&
+        isChronological(board1Eta, p.leg1Eta, p.leg2Eta),
+    ) ?? null;
 
-  let scoreTc: string;
-  if (best) {
-    scoreTc = `第二程上車 ${fmtHkHm(best.leg2Eta)}（約 ${board2InMinutes} 分後）· 轉車步行 ${pair.walkMeters}m`;
-  } else {
-    scoreTc = `轉車步行 ${pair.walkMeters}m · 暫時接唔到可見班次`;
+  if (!best) {
+    return miss(`轉車步行 ${pair.walkMeters}m · 暫時接唔到合理時間嘅第二程`, etas1[0]?.eta ?? null);
   }
 
+  const board2InMinutes = minutesFromNow(best.leg2Eta, nowMs);
   return {
     alight1: pair.alight1,
     board2: pair.board2,
     walkMeters: pair.walkMeters,
     walkMinutes: pair.walkMinutes,
-    hasMatch: !!best,
-    waitMinutes: best?.waitMinutes ?? null,
-    gapMinutes: best?.gapMinutes ?? null,
+    hasMatch: true,
+    waitMinutes: best.waitMinutes,
+    gapMinutes: best.gapMinutes,
     board1Eta,
-    leg1Eta: best?.leg1Eta ?? etas1[0]?.eta ?? etas1Raw[0]?.eta ?? null,
-    leg2Eta: best?.leg2Eta ?? null,
-    readyAt: best?.readyAt ?? null,
+    leg1Eta: best.leg1Eta,
+    leg2Eta: best.leg2Eta,
+    readyAt: best.readyAt,
     board2InMinutes,
-    scoreTc,
+    scoreTc: `第二程上車 ${fmtHkHm(best.leg2Eta)}（約 ${board2InMinutes} 分後）· 轉車步行 ${pair.walkMeters}m`,
   };
 }
 
@@ -288,10 +321,13 @@ export async function planTransfer(params: {
   });
 
   const top = scored.slice(0, limit);
-  const best = top[0];
-  const summaryTc = best?.hasMatch
-    ? `上車時間估算：行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，預計 ${fmtHkHm(board1Eta)} 上第一程；轉「${best.alight1.nameTc} → ${best.board2.nameTc}」後，約 ${fmtHkHm(best.leg2Eta)} 上第二程。`
-    : `搵到 ${top.length} 個近距離轉乘站，但即時 ETA 暫時未見穩陣接駁；可試人手選擇。`;
+  const best = top.find((c) => c.hasMatch) ?? top[0];
+  let summaryTc: string;
+  if (best?.hasMatch && board1Eta && best.leg1Eta && best.leg2Eta) {
+    summaryTc = `上車時間估算：行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，預計 ${fmtHkHm(board1Eta)} 上第一程 → ${fmtHkHm(best.leg1Eta)} 落車轉「${best.alight1.nameTc} → ${best.board2.nameTc}」→ 約 ${fmtHkHm(best.leg2Eta)} 上第二程。`;
+  } else {
+    summaryTc = `預計第一程約 ${fmtHkHm(board1Eta)} 喺「${board1.nameTc}」上車；附近轉乘站暫時未有「上車→落車→再上車」時間順序合理嘅 ETA（長途線常見，因為落車站 ETA 仲未出）。可改最少步行或人手選擇。`;
+  }
 
   return { mode: "fastest", board1, candidates: top, summaryTc };
 }
