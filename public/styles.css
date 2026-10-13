@@ -207,6 +207,113 @@ select:focus {
   color: rgba(16, 35, 31, 0.65);
 }
 
+.nearby {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(11, 95, 92, 0.08), rgba(255, 255, 255, 0.25)),
+    rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(16, 35, 31, 0.06);
+}
+
+.nearby-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.nearby-head h2 {
+  margin: 0 0 0.25rem;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.nearby-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.nearby-stop {
+  border: 1px solid rgba(16, 35, 31, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 0.75rem 0.85rem;
+}
+
+.nearby-stop summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-weight: 700;
+}
+
+.nearby-stop summary::-webkit-details-marker {
+  display: none;
+}
+
+.nearby-stop .dist {
+  color: var(--sea);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.service-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.7rem;
+}
+
+.service-row {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 12px;
+  background: rgba(11, 95, 92, 0.05);
+}
+
+@media (min-width: 700px) {
+  .service-row {
+    grid-template-columns: 1fr auto;
+    align-items: center;
+  }
+}
+
+.service-row p {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.service-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chip-btn {
+  appearance: none;
+  border: 1px solid rgba(11, 95, 92, 0.28);
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--sea-deep);
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chip-btn:hover {
+  background: rgba(11, 95, 92, 0.1);
+}
+
 .cta {
   appearance: none;
   border: 0;
@@ -219,6 +326,12 @@ select:focus {
   cursor: pointer;
   box-shadow: 0 10px 24px rgba(226, 161, 0, 0.35);
   transition: transform 160ms ease, filter 160ms ease;
+}
+
+.cta.secondary {
+  background: linear-gradient(135deg, var(--sea), #14807c);
+  color: #f4fff9;
+  box-shadow: 0 10px 24px rgba(11, 95, 92, 0.28);
 }
 
 .cta:hover {
