@@ -1,9 +1,11 @@
 import {
   estimateWalkMinutes,
+  findNearbyStops,
   getStop,
   listEtas,
   listRouteStops,
   listRoutes,
+  listStopServices,
   type Bound,
   type Company,
 } from "./hk-transit";
@@ -53,7 +55,39 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.1.0" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.1.1" });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/nearby") {
+    const lat = Number(url.searchParams.get("lat"));
+    const long = Number(url.searchParams.get("long") ?? url.searchParams.get("lng"));
+    const limit = Number(url.searchParams.get("limit") ?? "12");
+    const maxMeters = Number(url.searchParams.get("maxMeters") ?? "900");
+    if (!Number.isFinite(lat) || !Number.isFinite(long)) {
+      return error("需要 lat / long");
+    }
+    if (lat < 22.1 || lat > 22.6 || long < 113.8 || long > 114.5) {
+      return error("位置似乎唔喺香港範圍");
+    }
+    const stops = await findNearbyStops({
+      lat,
+      long,
+      limit: Number.isFinite(limit) ? limit : 12,
+      maxMeters: Number.isFinite(maxMeters) ? maxMeters : 900,
+    });
+    return json({
+      origin: { lat, long },
+      stops,
+      noteTc: "附近站暫時用九巴／龍運站庫（城巴未有完整公開站表）。",
+    });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/stop-services") {
+    const co = asCompany(url.searchParams.get("co")) ?? "KMB";
+    const stopId = url.searchParams.get("stopId");
+    if (!stopId) return error("需要 stopId");
+    const services = await listStopServices(co, stopId);
+    return json({ services });
   }
 
   if (request.method === "GET" && url.pathname === "/api/routes") {
