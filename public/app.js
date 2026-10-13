@@ -368,7 +368,8 @@ function renderResult(data) {
   $("result").innerHTML = `
     <div class="summary">
       <span class="pill ${data.hasMatch ? "match" : "nomatch"}">
-        ${data.hasMatch ? "有 Match" : "未 Match"}</span>
+        ${data.hasMatch ? "有 Match" : "未 Match"}
+      </span>
       <p>${data.summaryTc}</p>
     </div>
     <p class="hint">${data.distanceHintTc} · 今次用步行 ${data.walkMinutes} 分 + 緩衝 ${data.bufferMinutes} 分</p>
