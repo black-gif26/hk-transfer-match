@@ -56,7 +56,7 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.2.0" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.2.1" });
   }
 
   if (request.method === "GET" && url.pathname === "/api/nearby") {

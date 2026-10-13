@@ -5,6 +5,7 @@ import {
   listRouteStops,
   type Bound,
   type Company,
+  type EtaItem,
   type StopInfo,
 } from "./hk-transit";
 import { matchTransfer } from "./transfer";
@@ -26,21 +27,43 @@ export interface TransferCandidate {
   hasMatch: boolean;
   waitMinutes: number | null;
   gapMinutes: number | null;
+  board1Eta: string | null;
   leg1Eta: string | null;
   leg2Eta: string | null;
   readyAt: string | null;
+  /** Estimated minutes from now until boarding the second bus. */
+  board2InMinutes: number | null;
   scoreTc: string;
 }
 
 export interface TransferPlanResult {
   mode: PlanMode;
-  board1: StopInfo & { metersFromOrigin: number; walkMinutesFromOrigin: number };
+  board1: StopInfo & {
+    metersFromOrigin: number;
+    walkMinutesFromOrigin: number;
+    boardEta: string | null;
+  };
   candidates: TransferCandidate[];
   summaryTc: string;
 }
 
 function parseEtaMs(iso: string): number {
   return new Date(iso).getTime();
+}
+
+function fmtHkHm(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString("zh-HK", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Hong_Kong",
+  });
+}
+
+function minutesFromNow(iso: string | null, nowMs: number): number | null {
+  if (!iso) return null;
+  return Math.max(0, Math.round((parseEtaMs(iso) - nowMs) / 60_000));
 }
 
 function pickNearestStop(origin: { lat: number; long: number }, stops: StopInfo[]): StopInfo {
@@ -57,6 +80,15 @@ function pickNearestStop(origin: { lat: number; long: number }, stops: StopInfo[
   return best;
 }
 
+/** First ETA you can catch after walking from origin (+ buffer). */
+function pickCatchableEta(
+  etas: EtaItem[],
+  readyMs: number,
+): EtaItem | null {
+  const sorted = [...etas].sort((a, b) => a.eta.localeCompare(b.eta));
+  return sorted.find((e) => parseEtaMs(e.eta) >= readyMs) ?? null;
+}
+
 function buildPairs(
   stops1: StopInfo[],
   stops2: StopInfo[],
@@ -71,7 +103,6 @@ function buildPairs(
   }> = [];
 
   for (const a of stops1) {
-    // Must ride at least one stop before transferring.
     if (a.seq <= board1Seq) continue;
     for (const b of stops2) {
       if (!Number.isFinite(a.lat) || !Number.isFinite(b.lat)) continue;
@@ -86,7 +117,6 @@ function buildPairs(
     }
   }
 
-  // Keep best board2 per alight stop (shortest walk), then unique-ish pairs.
   const bestByAlight = new Map<string, (typeof pairs)[number]>();
   for (const p of pairs) {
     const key = p.alight1.stopId;
@@ -96,23 +126,37 @@ function buildPairs(
   return [...bestByAlight.values()].sort((x, y) => x.walkMeters - y.walkMeters);
 }
 
-async function scoreCandidate(
-  leg1: RouteRef,
-  leg2: RouteRef,
-  pair: { alight1: StopInfo; board2: StopInfo; walkMeters: number; walkMinutes: number },
-  bufferMinutes: number,
-): Promise<TransferCandidate> {
-  const [etas1, etas2] = await Promise.all([
+async function scoreCandidate(params: {
+  leg1: RouteRef;
+  leg2: RouteRef;
+  pair: { alight1: StopInfo; board2: StopInfo; walkMeters: number; walkMinutes: number };
+  bufferMinutes: number;
+  board1: StopInfo;
+  board1Eta: string | null;
+  nowMs: number;
+}): Promise<TransferCandidate> {
+  const { leg1, leg2, pair, bufferMinutes, board1, board1Eta, nowMs } = params;
+
+  const [etas1Raw, etas2] = await Promise.all([
     listEtas(leg1.co, leg1.route, pair.alight1.stopId, leg1.serviceType),
     listEtas(leg2.co, leg2.route, pair.board2.stopId, leg2.serviceType),
   ]);
+
+  // Rough ride time so alight ETA is after the bus you boarded at board1.
+  const stopGap = Math.max(1, pair.alight1.seq - board1.seq);
+  const minRideMinutes = Math.max(2, Math.round(stopGap * 1.6));
+  const earliestAlightMs = board1Eta
+    ? parseEtaMs(board1Eta) + minRideMinutes * 60_000
+    : nowMs;
+
+  const etas1 = etas1Raw.filter((e) => parseEtaMs(e.eta) >= earliestAlightMs);
 
   const matched = matchTransfer({
     leg1: {
       ...leg1,
       stopId: pair.alight1.stopId,
       stopNameTc: pair.alight1.nameTc,
-      etas: etas1,
+      etas: etas1.length ? etas1 : etas1Raw,
     },
     leg2: {
       ...leg2,
@@ -125,6 +169,15 @@ async function scoreCandidate(
   });
 
   const best = matched.pairs.find((p) => p.status !== "miss") ?? null;
+  const board2InMinutes = minutesFromNow(best?.leg2Eta ?? null, nowMs);
+
+  let scoreTc: string;
+  if (best) {
+    scoreTc = `第二程上車 ${fmtHkHm(best.leg2Eta)}（約 ${board2InMinutes} 分後）· 轉車步行 ${pair.walkMeters}m`;
+  } else {
+    scoreTc = `轉車步行 ${pair.walkMeters}m · 暫時接唔到可見班次`;
+  }
+
   return {
     alight1: pair.alight1,
     board2: pair.board2,
@@ -133,12 +186,12 @@ async function scoreCandidate(
     hasMatch: !!best,
     waitMinutes: best?.waitMinutes ?? null,
     gapMinutes: best?.gapMinutes ?? null,
-    leg1Eta: best?.leg1Eta ?? etas1[0]?.eta ?? null,
+    board1Eta,
+    leg1Eta: best?.leg1Eta ?? etas1[0]?.eta ?? etas1Raw[0]?.eta ?? null,
     leg2Eta: best?.leg2Eta ?? null,
     readyAt: best?.readyAt ?? null,
-    scoreTc: best
-      ? `步行 ${pair.walkMeters}m · 等約 ${best.waitMinutes} 分`
-      : `步行 ${pair.walkMeters}m · 暫時接唔到可見班次`,
+    board2InMinutes,
+    scoreTc,
   };
 }
 
@@ -154,6 +207,7 @@ export async function planTransfer(params: {
   const maxTransferMeters = Math.min(Math.max(params.maxTransferMeters ?? 450, 80), 1200);
   const bufferMinutes = Math.max(0, params.bufferMinutes ?? 1);
   const limit = Math.min(Math.max(params.limit ?? 8, 1), 20);
+  const nowMs = Date.now();
 
   const [stops1, stops2] = await Promise.all([
     listRouteStops(params.leg1.co, params.leg1.route, params.leg1.bound, params.leg1.serviceType),
@@ -165,10 +219,26 @@ export async function planTransfer(params: {
 
   const nearest = pickNearestStop(params.origin, stops1);
   const metersFromOrigin = Math.round(distanceMeters(params.origin, nearest));
+  const walkMinutesFromOrigin = Math.max(
+    1,
+    Math.ceil(metersFromOrigin / ((4.5 * 1000) / 60)),
+  );
+
+  const board1Etas = await listEtas(
+    params.leg1.co,
+    params.leg1.route,
+    nearest.stopId,
+    params.leg1.serviceType,
+  );
+  const readyAtBoard1Ms = nowMs + (walkMinutesFromOrigin + bufferMinutes) * 60_000;
+  const catchable = pickCatchableEta(board1Etas, readyAtBoard1Ms);
+  const board1Eta = catchable?.eta ?? board1Etas[0]?.eta ?? null;
+
   const board1 = {
     ...nearest,
     metersFromOrigin,
-    walkMinutesFromOrigin: Math.max(1, Math.ceil(metersFromOrigin / ((4.5 * 1000) / 60))),
+    walkMinutesFromOrigin,
+    boardEta: board1Eta,
   };
 
   const pairs = buildPairs(stops1, stops2, board1.seq, maxTransferMeters);
@@ -181,24 +251,30 @@ export async function planTransfer(params: {
     };
   }
 
+  const scoreOne = (p: (typeof pairs)[number]) =>
+    scoreCandidate({
+      leg1: params.leg1,
+      leg2: params.leg2,
+      pair: p,
+      bufferMinutes,
+      board1,
+      board1Eta,
+      nowMs,
+    });
+
   if (params.mode === "shortest_walk" || params.mode === "manual") {
     const top = pairs.slice(0, limit);
-    // Still attach light ETA scoring for display, but keep walk order.
-    const scored = await Promise.all(
-      top.map((p) => scoreCandidate(params.leg1, params.leg2, p, bufferMinutes)),
-    );
+    const scored = await Promise.all(top.map(scoreOne));
     const summaryTc =
       params.mode === "manual"
-        ? `已列出 ${scored.length} 個可揀轉乘站（由近至遠）。你可人手揀一個。`
-        : `最少步行：最近轉乘約 ${scored[0].walkMeters}m（${scored[0].alight1.nameTc} → ${scored[0].board2.nameTc}）。`;
+        ? `已列出 ${scored.length} 個可揀轉乘站（由近至遠）。預計第一程上車 ${fmtHkHm(board1Eta)}。`
+        : `最少步行：最近轉乘約 ${scored[0].walkMeters}m。預計第一程上車 ${fmtHkHm(board1Eta)}，第二程上車 ${fmtHkHm(scored[0].leg2Eta)}。`;
     return { mode: params.mode, board1, candidates: scored, summaryTc };
   }
 
-  // fastest: evaluate a wider shortlist by walk, then sort by earliest successful board2 time / wait
+  // fastest = earliest estimated second-bus boarding time
   const shortlist = pairs.slice(0, Math.min(16, pairs.length));
-  const scored = await Promise.all(
-    shortlist.map((p) => scoreCandidate(params.leg1, params.leg2, p, bufferMinutes)),
-  );
+  const scored = await Promise.all(shortlist.map(scoreOne));
 
   scored.sort((a, b) => {
     if (a.hasMatch !== b.hasMatch) return a.hasMatch ? -1 : 1;
@@ -206,7 +282,7 @@ export async function planTransfer(params: {
       const aBoard = a.leg2Eta ? parseEtaMs(a.leg2Eta) : Infinity;
       const bBoard = b.leg2Eta ? parseEtaMs(b.leg2Eta) : Infinity;
       if (aBoard !== bBoard) return aBoard - bBoard;
-      return (a.waitMinutes ?? 99) - (b.waitMinutes ?? 99);
+      return a.walkMeters - b.walkMeters;
     }
     return a.walkMeters - b.walkMeters;
   });
@@ -214,7 +290,7 @@ export async function planTransfer(params: {
   const top = scored.slice(0, limit);
   const best = top[0];
   const summaryTc = best?.hasMatch
-    ? `最快轉乘：建議喺「${best.alight1.nameTc}」轉「${best.board2.nameTc}」，第二程約 ${best.leg2Eta ? new Date(best.leg2Eta).toLocaleTimeString("zh-HK", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Hong_Kong" }) : "—"} 可上車。`
+    ? `上車時間估算：行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，預計 ${fmtHkHm(board1Eta)} 上第一程；轉「${best.alight1.nameTc} → ${best.board2.nameTc}」後，約 ${fmtHkHm(best.leg2Eta)} 上第二程。`
     : `搵到 ${top.length} 個近距離轉乘站，但即時 ETA 暫時未見穩陣接駁；可試人手選擇。`;
 
   return { mode: "fastest", board1, candidates: top, summaryTc };

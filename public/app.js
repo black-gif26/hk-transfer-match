@@ -405,17 +405,23 @@ function renderPlanResult(plan) {
 
   const modeLabel =
     plan.mode === "fastest"
-      ? "最快轉乘"
+      ? "上車時間估算"
       : plan.mode === "manual"
         ? "人手選擇"
         : "最少步行";
+
+  const board1EtaText = plan.board1.boardEta
+    ? `預計 ${fmtTime(plan.board1.boardEta)} 上第一程`
+    : "暫未有第一程上車 ETA";
 
   box.innerHTML = `
     <div class="summary">
       <span class="pill match">${modeLabel}</span>
       <p>${plan.summaryTc}</p>
     </div>
-    <p class="hint">第一程建議由附近「${plan.board1.nameTc}」上車（距出發地約 ${plan.board1.metersFromOrigin}m）。</p>
+    <p class="hint">
+      出發地 →「${plan.board1.nameTc}」約 ${plan.board1.metersFromOrigin}m / ${plan.board1.walkMinutesFromOrigin} 分步行 · ${board1EtaText}
+    </p>
     <div class="plan-result">
       ${plan.candidates
         .map((c, idx) => {
@@ -429,8 +435,9 @@ function renderPlanResult(plan) {
             <p class="meta-line">落：${c.alight1.nameTc}</p>
             <p class="meta-line">上：${c.board2.nameTc}</p>
             <p class="meta-line">
-              ${c.leg1Eta ? `落車 ${fmtTime(c.leg1Eta)}` : "暫無落車 ETA"}
-              ${c.leg2Eta ? ` → 上車 ${fmtTime(c.leg2Eta)}` : ""}
+              ${c.board1Eta ? `①上車 ${fmtTime(c.board1Eta)}` : "①上車 —"}
+              ${c.leg1Eta ? ` → 落車 ${fmtTime(c.leg1Eta)}` : ""}
+              ${c.leg2Eta ? ` → ②上車 ${fmtTime(c.leg2Eta)}` : ""}
             </p>
             <div class="service-actions">
               <button type="button" class="chip-btn" data-pick="${idx}">選用呢個轉乘站</button>
