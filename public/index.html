@@ -21,11 +21,22 @@
       <header class="hero">
         <div class="brand">駁車<span>時</span></div>
         <p class="tagline">
-          第一版專做兩程巴士轉乘：落第一程之後，行去第二程站，時間夠唔夠接？即時 ETA 幫你對時間。
+          兩程巴士轉乘時間 match：可用定位搵附近站，再對落車同上車 ETA 夠唔夠接。
         </p>
       </header>
 
       <section class="panel">
+        <div class="nearby">
+          <div class="nearby-head">
+            <div>
+              <h2>附近車站</h2>
+              <p class="hint" id="nearbyHint">用手機定位搵最近九巴／龍運站，再一按填入轉乘。</p>
+            </div>
+            <button class="cta secondary" id="locateBtn" type="button">用我個位置</button>
+          </div>
+          <div id="nearbyList" class="nearby-list" aria-live="polite"></div>
+        </div>
+
         <div class="legs">
           <article class="leg" data-leg="1">
             <div class="leg-head">

@@ -8,13 +8,14 @@
 
 - 支援九巴／龍運（KMB）同城巴（CTB）
 - 兩程車：落車 ETA → 步行 + 緩衝 → 對第二程 ETA
+- **用家定位搵附近車站**（而家主要係九巴／龍運站庫），再一按填入落車／上車
 - 自動用兩站座標估算步行分鐘（可人手改）
 - 顯示每個組合係「充裕／啱啱好／好逼／接唔到」
 
 ## 本機跑
 
 ```bash
-npm install
+npm install --legacy-peer-deps
 npm run dev
 ```
 
@@ -31,6 +32,8 @@ npm run deploy
 
 - `GET /api/routes?co=KMB|CTB&q=1A`
 - `GET /api/stops?co=KMB&route=1A&bound=O&serviceType=1`
+- `GET /api/nearby?lat=22.29&long=114.17&limit=12&maxMeters=900`
+- `GET /api/stop-services?co=KMB&stopId=...`
 - `POST /api/match` — body 含 `leg1`、`leg2`、可選 `walkMinutes` / `bufferMinutes`
 
 ## 資料來源
