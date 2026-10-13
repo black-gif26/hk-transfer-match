@@ -267,8 +267,7 @@ export async function listEtas(
     .sort((a, b) => a.eta.localeCompare(b.eta));
 }
 
-/** Rough walking minutes from lat/long (≈ 4.5 km/h). */
-export function estimateWalkMinutes(
+export function distanceMeters(
   a: { lat: number; long: number },
   b: { lat: number; long: number },
 ): number {
@@ -281,7 +280,108 @@ export function estimateWalkMinutes(
   const h =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-  const meters = 2 * R * Math.asin(Math.sqrt(h));
-  const minutes = meters / ((4.5 * 1000) / 60);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/** Rough walking minutes from lat/long (≈ 4.5 km/h). */
+export function estimateWalkMinutes(
+  a: { lat: number; long: number },
+  b: { lat: number; long: number },
+): number {
+  const minutes = distanceMeters(a, b) / ((4.5 * 1000) / 60);
   return Math.max(1, Math.ceil(minutes));
+}
+
+export interface NearbyStop {
+  co: Company;
+  stopId: string;
+  nameTc: string;
+  nameEn: string;
+  lat: number;
+  long: number;
+  meters: number;
+  walkMinutes: number;
+}
+
+export async function findNearbyStops(params: {
+  lat: number;
+  long: number;
+  limit?: number;
+  maxMeters?: number;
+}): Promise<NearbyStop[]> {
+  const limit = Math.min(Math.max(params.limit ?? 12, 1), 40);
+  const maxMeters = Math.min(Math.max(params.maxMeters ?? 900, 100), 3000);
+  const origin = { lat: params.lat, long: params.long };
+
+  // Citybus has no bulk stop catalogue in the open API, so nearby is KMB/LWB first.
+  const dir = await getKmbStopDirectory();
+  const ranked: NearbyStop[] = [];
+  for (const [stopId, stop] of dir) {
+    if (!Number.isFinite(stop.lat) || !Number.isFinite(stop.long)) continue;
+    const meters = distanceMeters(origin, stop);
+    if (meters > maxMeters) continue;
+    ranked.push({
+      co: "KMB",
+      stopId,
+      nameTc: stop.nameTc,
+      nameEn: stop.nameEn,
+      lat: stop.lat,
+      long: stop.long,
+      meters: Math.round(meters),
+      walkMinutes: Math.max(1, Math.ceil(meters / ((4.5 * 1000) / 60))),
+    });
+  }
+
+  ranked.sort((a, b) => a.meters - b.meters);
+  return ranked.slice(0, limit);
+}
+
+export interface StopService {
+  co: Company;
+  route: string;
+  bound: Bound;
+  serviceType: string;
+  destTc: string;
+  nextEta: string | null;
+}
+
+export async function listStopServices(co: Company, stopId: string): Promise<StopService[]> {
+  if (co !== "KMB") {
+    throw new Error("附近站路線暫時只支援九巴／龍運");
+  }
+
+  type Row = {
+    co: string;
+    route: string;
+    dir: Bound;
+    service_type: number;
+    dest_tc: string;
+    eta: string | null;
+    eta_seq: number;
+  };
+  const json = await getJson<{ data: Row[] }>(`${KMB}/stop-eta/${encodeURIComponent(stopId)}`);
+  const best = new Map<string, StopService>();
+
+  for (const row of json.data) {
+    const key = `${row.route}|${row.dir}|${row.service_type}`;
+    const existing = best.get(key);
+    if (!existing) {
+      best.set(key, {
+        co: "KMB",
+        route: row.route,
+        bound: row.dir,
+        serviceType: String(row.service_type),
+        destTc: row.dest_tc,
+        nextEta: row.eta,
+      });
+      continue;
+    }
+    if (row.eta && (!existing.nextEta || row.eta < existing.nextEta)) {
+      existing.nextEta = row.eta;
+    }
+  }
+
+  return [...best.values()].sort((a, b) =>
+    a.route.localeCompare(b.route, "en", { numeric: true }),
+  );
 }
