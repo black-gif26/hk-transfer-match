@@ -391,6 +391,25 @@ async function fillStops(leg, preferredId) {
   fillingControls = false;
 }
 
+function minRideMinutes(boardSeq, alightSeq) {
+  const gap = Math.max(1, Number(alightSeq) - Number(boardSeq));
+  return Math.max(3, Math.round(gap * 1.8));
+}
+
+function etaMs(iso) {
+  const ms = new Date(iso || "").getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function chainIsPossible(board1Eta, leg1Eta, leg2Eta) {
+  const alight = etaMs(leg1Eta);
+  const second = etaMs(leg2Eta);
+  if (!Number.isFinite(alight) || !Number.isFinite(second) || !(alight < second)) return false;
+  const board = etaMs(board1Eta);
+  if (Number.isFinite(board) && !(board < alight)) return false;
+  return true;
+}
+
 async function runMatch(candidate) {
   const route1 = state.leg[1];
   const route2 = state.leg[2];
@@ -399,6 +418,8 @@ async function runMatch(candidate) {
   if (!route1 || !route2 || !stop1 || !stop2) return null;
   const walkRaw = $("walkMinutes").value;
   const bufferRaw = $("bufferMinutes").value;
+  const boardSeq = state.plan?.board1?.seq;
+  const alightSeq = candidate.alight1?.seq;
   return api("/api/match", {
     method: "POST",
     body: JSON.stringify({
@@ -418,6 +439,10 @@ async function runMatch(candidate) {
       },
       walkMinutes: walkRaw === "" ? null : Number(walkRaw),
       bufferMinutes: bufferRaw === "" ? 1 : Number(bufferRaw),
+      board1Eta: candidate.board1Eta,
+      minRideMinutes: Number.isFinite(Number(boardSeq)) && Number.isFinite(Number(alightSeq))
+        ? minRideMinutes(boardSeq, alightSeq)
+        : 3,
     }),
   });
 }
@@ -429,9 +454,23 @@ function minutesUntil(iso) {
 }
 
 function applyMatchToCandidate(candidate, match) {
-  if (!candidate || candidate.hasMatch || !match) return;
-  const pair = match.pairs?.find((item) => item.status !== "miss" && item.leg2Eta);
-  if (!pair) return;
+  if (!candidate || !match) return;
+  if (candidate.hasMatch && chainIsPossible(candidate.board1Eta, candidate.leg1Eta, candidate.leg2Eta)) return;
+  const pair = (match.pairs || []).find(
+    (item) => item.status !== "miss" && chainIsPossible(candidate.board1Eta, item.leg1Eta, item.leg2Eta),
+  );
+  candidate.timed = true;
+  if (!pair) {
+    candidate.hasMatch = false;
+    candidate.leg1Eta = null;
+    candidate.leg2Eta = null;
+    candidate.readyAt = null;
+    candidate.waitMinutes = null;
+    candidate.gapMinutes = null;
+    candidate.board2InMinutes = null;
+    candidate.scoreTc = "上第一程之後先至落車，呢個站暫時接唔到。";
+    return;
+  }
   candidate.hasMatch = true;
   candidate.leg1Eta = pair.leg1Eta;
   candidate.leg2Eta = pair.leg2Eta;
@@ -476,10 +515,11 @@ function hideTransfer() {
 
 function transferParts(candidate) {
   const title = `落 ${candidate.alight1.nameTc} → ${candidate.walkMeters}m → 上 ${candidate.board2.nameTc}`;
-  const meta = candidate.board2InMinutes == null
-    ? "未計班次，撳一下先查時間"
-    : `${candidate.board2InMinutes} 分鐘後上第二程`;
-  return { title, meta };
+  if (candidate.board2InMinutes != null && chainIsPossible(candidate.board1Eta, candidate.leg1Eta, candidate.leg2Eta)) {
+    return { title, meta: `${candidate.board2InMinutes} 分鐘後上第二程` };
+  }
+  if (candidate.timed) return { title, meta: "呢班第一程接唔到" };
+  return { title, meta: "未計班次，撳一下先查時間" };
 }
 
 function renderTransferOptions() {
@@ -507,12 +547,12 @@ function offStopName() {
   return state.stops[2].find((stop) => stop.stopId === id)?.nameTc || "";
 }
 
-function matchBadge() {
-  const pair = state.match?.pairs?.find((item) => item.status !== "miss") || state.match?.pairs?.[0];
-  if (!pair) return { label: "計緊", cls: "" };
-  if (pair.status === "miss") return { label: pair.statusTc || "接唔到", cls: "miss" };
-  if (pair.status === "tight") return { label: pair.statusTc || "好逼", cls: "tight" };
-  return { label: pair.statusTc || "可接", cls: "" };
+function matchBadge(candidate) {
+  if (!chainIsPossible(candidate.board1Eta, candidate.leg1Eta, candidate.leg2Eta)) {
+    return { label: candidate.timed ? "未接" : "計緊", cls: candidate.timed ? "miss" : "" };
+  }
+  if (candidate.waitMinutes != null && candidate.waitMinutes <= 2) return { label: "好逼", cls: "tight" };
+  return { label: "可接", cls: "" };
 }
 
 function renderResults() {
@@ -536,18 +576,21 @@ function renderResults() {
 
   const selected = state.selected ?? 0;
   const chosen = plan.candidates[selected];
-  const badge = chosen.hasMatch ? matchBadge() : { label: "未接", cls: "miss" };
-  const minutes = chosen.board2InMinutes;
-  const pair = state.match?.pairs?.find((item) => item.status !== "miss") || state.match?.pairs?.[0];
-  const detail = pair
-    ? `${fmtTime(pair.leg1Eta)} 落車 · ${fmtTime(pair.readyAt)} 行到 · ${pair.leg2Eta ? fmtTime(pair.leg2Eta) : "—"} 上第二程`
-    : chosen.scoreTc;
+  const ok = chainIsPossible(chosen.board1Eta, chosen.leg1Eta, chosen.leg2Eta);
+  const badge = matchBadge(chosen);
+  const minutes = ok ? chosen.board2InMinutes : null;
+  const minuteCaption = ok ? "分鐘後上第二程" : chosen.timed ? "接唔到第二程" : "未有上車時間";
+  const detail = ok
+    ? `${fmtTime(chosen.leg1Eta)} 落車 · ${fmtTime(chosen.readyAt)} 行到 · ${fmtTime(chosen.leg2Eta)} 上第二程`
+    : chosen.timed
+      ? "落車時間早過上第一程，呢個轉法接唔到。等下一班先至算。"
+      : chosen.scoreTc;
 
   box.innerHTML = `
     ${modeButtons}
     <article class="card">
       <div class="card-top">
-        <div class="mins">${minutes == null ? "—" : minutes}<span>${minutes == null ? "未有上車時間" : "分鐘後上第二程"}</span></div>
+        <div class="mins">${minutes == null ? "—" : minutes}<span>${escapeHtml(minuteCaption)}</span></div>
         <span class="pill ${badge.cls}">${escapeHtml(badge.label)}</span>
       </div>
       <ol class="itinerary">
@@ -555,7 +598,7 @@ function renderResults() {
           <span class="dot"></span>
           <div>
             <b>${escapeHtml(state.leg[1].route)}</b> ${fmtTime(chosen.board1Eta)} 上 ${escapeHtml(plan.board1.nameTc)}
-            <small>${fmtTime(chosen.leg1Eta)} 落 ${escapeHtml(chosen.alight1.nameTc)}</small>
+            <small>${ok ? `${fmtTime(chosen.leg1Eta)} 落` : "落"} ${escapeHtml(chosen.alight1.nameTc)}</small>
           </div>
         </li>
         <li class="walk">
@@ -565,7 +608,7 @@ function renderResults() {
         <li class="leg">
           <span class="dot"></span>
           <div>
-            <b>${escapeHtml(state.leg[2].route)}</b> ${fmtTime(chosen.leg2Eta)} 上 ${escapeHtml(chosen.board2.nameTc)}
+            <b>${escapeHtml(state.leg[2].route)}</b> ${ok ? `${fmtTime(chosen.leg2Eta)} 上` : "上"} ${escapeHtml(chosen.board2.nameTc)}
             ${offStopName() ? `<small>落 ${escapeHtml(offStopName())}</small>` : ""}
           </div>
         </li>

@@ -66,7 +66,7 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.3.8" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.3.9" });
   }
 
   if (request.method === "GET" && url.pathname === "/api/nearby") {
@@ -249,6 +249,8 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       };
       walkMinutes?: number | null;
       bufferMinutes?: number | null;
+      board1Eta?: string | null;
+      minRideMinutes?: number | null;
     };
 
     if (!body?.leg1?.stopId || !body?.leg2?.stopId) {
@@ -300,6 +302,8 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       },
       walkMinutes,
       bufferMinutes,
+      board1Eta: body.board1Eta,
+      minRideMinutes: body.minRideMinutes,
     });
 
     return json({

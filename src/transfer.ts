@@ -63,11 +63,20 @@ export function matchTransfer(params: {
   leg2: LegInput & { stopNameTc: string; etas: EtaItem[] };
   walkMinutes: number;
   bufferMinutes: number;
+  /** When set, ignore alight ETAs that belong to a bus you have not boarded yet. */
+  board1Eta?: string | null;
+  /** Minimum minutes on the first bus before an alight ETA can count. */
+  minRideMinutes?: number | null;
 }): TransferResult {
   const { leg1, leg2, walkMinutes, bufferMinutes } = params;
+  const minRideMinutes = Math.max(0, params.minRideMinutes ?? 0);
+  const boardMs = params.board1Eta ? parseEta(params.board1Eta) : NaN;
+  const leg1Etas = Number.isFinite(boardMs)
+    ? leg1.etas.filter((eta) => parseEta(eta.eta) >= boardMs + minRideMinutes * 60_000)
+    : leg1.etas;
   const pairs: TransferPair[] = [];
 
-  for (const e1 of leg1.etas) {
+  for (const e1 of leg1Etas) {
     const readyAt = addMinutes(e1.eta, walkMinutes + bufferMinutes);
     const readyMs = parseEta(readyAt);
 
@@ -120,6 +129,8 @@ export function matchTransfer(params: {
   let summaryTc: string;
   if (!leg1.etas.length) {
     summaryTc = "第一程暫時未有 ETA，可能收車或者資料暫時空。";
+  } else if (!leg1Etas.length) {
+    summaryTc = "見到嘅落車時間早過你上第一程，接唔到呢班。";
   } else if (!leg2.etas.length) {
     summaryTc = "第二程暫時未有 ETA，可能收車或者資料暫時空。";
   } else if (!hasMatch) {

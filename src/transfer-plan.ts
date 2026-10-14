@@ -34,6 +34,8 @@ export interface TransferCandidate {
   readyAt: string | null;
   /** Estimated minutes from now until boarding the second bus. */
   board2InMinutes: number | null;
+  /** True once this interchange has been checked against live ETAs. */
+  timed: boolean;
   scoreTc: string;
 }
 
@@ -269,6 +271,7 @@ function bareCandidate(
     leg2Eta: null,
     readyAt: null,
     board2InMinutes: null,
+    timed: false,
     scoreTc: `轉車步行 ${pair.walkMeters}m · 落 ${pair.alight1.nameTc} → 上 ${pair.board2.nameTc}`,
   };
 }
@@ -305,6 +308,7 @@ async function scoreCandidate(params: {
     leg2Eta: null,
     readyAt: null,
     board2InMinutes: null,
+    timed: true,
     scoreTc,
   });
 
@@ -343,6 +347,8 @@ async function scoreCandidate(params: {
     },
     walkMinutes: pair.walkMinutes,
     bufferMinutes,
+    board1Eta,
+    minRideMinutes: 0,
   });
 
   // Never accept a chain that goes backwards in time (e.g. board2 before board1).
@@ -372,6 +378,7 @@ async function scoreCandidate(params: {
     leg2Eta: best.leg2Eta,
     readyAt: best.readyAt,
     board2InMinutes,
+    timed: true,
     scoreTc: `第二程上車 ${fmtHkHm(best.leg2Eta)}（約 ${board2InMinutes} 分後）· 轉車步行 ${pair.walkMeters}m`,
   };
 }
