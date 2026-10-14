@@ -65,6 +65,12 @@
                   <option value="">用建議站</option>
                 </select>
               </label>
+              <label class="field-stop" id="boardLabel" hidden>
+                揀邊班車
+                <select id="board1Eta" disabled>
+                  <option value="">自動下一班</option>
+                </select>
+              </label>
             </div>
           </div>
 
@@ -138,17 +144,11 @@
             步行（分鐘，空＝自動）
             <input id="walkMinutes" type="number" min="0" step="1" placeholder="自動" />
           </label>
-          <label>
-            第一程班次
-            <select id="board1Eta">
-              <option value="">自動下一班</option>
-            </select>
-          </label>
         </div>
       </details>
 
       <p class="foot">資料：DATA.GOV.HK（KMB / Citybus）。轉乘站暫時以九巴座標為主。</p>
     </main>
-    <script type="module" src="/app.js?v=10"></script>
+    <script type="module" src="/app.js?v=11"></script>
   </body>
 </html>

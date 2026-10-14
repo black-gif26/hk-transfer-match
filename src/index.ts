@@ -66,7 +66,7 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.3.9" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.3.10" });
   }
 
   if (request.method === "GET" && url.pathname === "/api/nearby") {
@@ -136,16 +136,17 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       };
       bufferMinutes?: number;
       preferredBoard1Eta?: string | null;
+      board1StopId?: string | null;
     };
-    if (!body?.origin || !Number.isFinite(body.origin.lat) || !Number.isFinite(body.origin.long)) {
-      return error("需要出發地 origin.lat / origin.long");
-    }
     if (!body.leg1?.route || !body.leg1.bound || !body.leg1.co) {
       return error("需要第一程路線");
     }
+    const origin = body.origin && Number.isFinite(body.origin.lat) && Number.isFinite(body.origin.long)
+      ? body.origin
+      : null;
     const budget = new SubrequestBudget();
     const ctx = await resolveBoard1Context({
-      origin: body.origin,
+      origin,
       leg1: {
         co: body.leg1.co,
         route: body.leg1.route,
@@ -154,14 +155,18 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       },
       bufferMinutes: body.bufferMinutes,
       preferredBoard1Eta: body.preferredBoard1Eta,
+      preferredBoard1StopId: body.board1StopId || null,
       budget,
     });
     console.log(JSON.stringify({ level: "info", event: "board1-departures", subrequests: budget.used }));
+    const where = origin
+      ? `（距出發地約 ${ctx.board1.metersFromOrigin}m / ${ctx.board1.walkMinutesFromOrigin} 分）`
+      : "";
     return json({
       board1: ctx.board1,
       board1Departures: ctx.board1Departures,
       board1EtaSource: ctx.board1EtaSource,
-      noteTc: `會喺「${ctx.board1.nameTc}」上第一程（距出發地約 ${ctx.board1.metersFromOrigin}m / ${ctx.board1.walkMinutesFromOrigin} 分）。`,
+      noteTc: `會喺「${ctx.board1.nameTc}」上第一程${where}。`,
     });
   }
 

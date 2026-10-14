@@ -15,9 +15,12 @@ const state = {
   match: null,
   mode: "fastest",
   transferTouched: false,
+  departureTouched: false,
 };
 
 let fillingControls = false;
+let boardStopKey = "";
+let boardToken = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -204,6 +207,7 @@ function pick(leg, index) {
   state.leg[leg] = route;
   hideSuggest();
   state.stopTouched[leg] = false;
+  if (leg === 1) state.departureTouched = false;
   renderChip(leg);
   const other = leg === 1 ? 2 : 1;
   if (!state.leg[other]) $(`q${other}`).focus();
@@ -214,6 +218,7 @@ function pick(leg, index) {
 function clearLeg(leg) {
   state.leg[leg] = null;
   state.stopTouched[leg] = false;
+  if (leg === 1) state.departureTouched = false;
   state.stops[leg] = [];
   $(`q${leg}`).value = "";
   renderChip(leg);
@@ -230,6 +235,16 @@ function resetStopSelect(leg) {
   select.disabled = true;
   select.value = "";
   label.hidden = true;
+  if (leg === 1) {
+    boardStopKey = "";
+    boardToken += 1;
+    $("boardLabel").hidden = true;
+    fillingControls = true;
+    $("board1Eta").innerHTML = `<option value="">自動下一班</option>`;
+    $("board1Eta").value = "";
+    $("board1Eta").disabled = true;
+    fillingControls = false;
+  }
 }
 
 function swapLegs() {
@@ -243,6 +258,7 @@ function swapLegs() {
   hideSuggest();
   state.stopTouched[1] = false;
   state.stopTouched[2] = false;
+  state.departureTouched = false;
   renderChip(1);
   renderChip(2);
   fillStops(1).catch(() => {});
@@ -295,7 +311,54 @@ function schedulePlan() {
 }
 
 function preferredBoard1Eta() {
+  if (!state.departureTouched) return null;
   return $("board1Eta").value || null;
+}
+
+function departureLabel(item) {
+  const when = fmtTime(item.eta);
+  if (!item.catchable) return `${when} · 可能趕唔切`;
+  return `${when} · ${item.inMinutes} 分後`;
+}
+
+async function loadBoard1Departures() {
+  const route = state.leg[1];
+  const label = $("boardLabel");
+  const select = $("board1Eta");
+  if (!route) {
+    boardStopKey = "";
+    label.hidden = true;
+    return;
+  }
+  const stopId = state.stopTouched[1] ? $("stop1").value || "" : "";
+  const key = `${route.co}|${route.route}|${route.bound}|${route.serviceType}|${stopId}|${state.origin?.lat ?? ""}|${state.origin?.long ?? ""}`;
+  if (key === boardStopKey && select.value && !select.disabled) return;
+  boardStopKey = key;
+  const token = ++boardToken;
+  label.hidden = false;
+  select.disabled = true;
+  try {
+    const data = await api("/api/board1-departures", {
+      method: "POST",
+      body: JSON.stringify({
+        origin: state.origin,
+        leg1: {
+          co: route.co,
+          route: route.route,
+          bound: route.bound,
+          serviceType: route.serviceType,
+        },
+        bufferMinutes: Number($("bufferMinutes").value || 1),
+        preferredBoard1Eta: preferredBoard1Eta(),
+        board1StopId: stopId || null,
+      }),
+    });
+    if (token !== boardToken) return;
+    renderBoard(data);
+  } catch {
+    if (token !== boardToken) return;
+    select.disabled = false;
+  }
 }
 
 async function runPlan() {
@@ -349,15 +412,19 @@ async function runPlan() {
 
 function renderBoard(plan) {
   const select = $("board1Eta");
-  const current = select.value;
   const departures = plan.board1Departures || [];
+  const wanted = state.departureTouched && select.value ? select.value : plan.board1?.boardEta || "";
   fillingControls = true;
-  select.innerHTML = `<option value="">自動下一班</option>${departures
-    .map((item) => `<option value="${escapeHtml(item.eta)}">${escapeHtml(item.labelTc)}</option>`)
-    .join("")}`;
-  if (current && [...select.options].some((option) => option.value === current)) {
-    select.value = current;
+  select.innerHTML = departures.length
+    ? departures.map((item) => `<option value="${escapeHtml(item.eta)}">${escapeHtml(departureLabel(item))}</option>`).join("")
+    : `<option value="">暫時未有班次</option>`;
+  if (wanted && [...select.options].some((option) => option.value === wanted)) {
+    select.value = wanted;
+  } else if (!departures.some((item) => item.eta === wanted)) {
+    state.departureTouched = false;
   }
+  select.disabled = !departures.length;
+  $("boardLabel").hidden = false;
   fillingControls = false;
 }
 
@@ -389,6 +456,7 @@ async function fillStops(leg, preferredId) {
   label.hidden = false;
   if (next && [...select.options].some((option) => option.value === next)) select.value = next;
   fillingControls = false;
+  if (leg === 1) loadBoard1Departures().catch(() => {});
 }
 
 function minRideMinutes(boardSeq, alightSeq) {
@@ -693,6 +761,7 @@ async function locate() {
     $("originLabel").textContent = "我的位置";
     $("originSub").textContent = "已定位 · 撳一下更新";
     $("originBtn").classList.add("is-ok");
+    if (state.leg[1]) loadBoard1Departures().catch(() => {});
     if (state.leg[1] && state.leg[2]) schedulePlan();
     else refreshStatus();
   } catch (err) {
@@ -784,14 +853,23 @@ $("transferList").addEventListener("pointercancel", () => {
 $("swapBtn").addEventListener("click", swapLegs);
 $("originBtn").addEventListener("click", locate);
 $("board1Eta").addEventListener("change", () => {
-  if (!fillingControls) schedulePlan();
+  if (fillingControls) return;
+  state.departureTouched = true;
+  if (readyToPlan()) schedulePlan();
 });
 $("bufferMinutes").addEventListener("change", debounce(() => schedulePlan(), 250));
 $("maxTransferMeters").addEventListener("change", debounce(() => schedulePlan(), 250));
 $("walkMinutes").addEventListener("change", debounce(() => onStopChange(), 250));
 $("stop1").addEventListener("change", () => {
-  if (!fillingControls) state.stopTouched[1] = true;
+  if (!fillingControls) {
+    state.stopTouched[1] = true;
+    state.departureTouched = false;
+    fillingControls = true;
+    $("board1Eta").value = "";
+    fillingControls = false;
+  }
   onStopChange();
+  loadBoard1Departures().catch(() => {});
 });
 $("stop2").addEventListener("change", () => {
   if (!fillingControls) state.stopTouched[2] = true;
