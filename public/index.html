@@ -95,6 +95,32 @@
           </div>
         </section>
 
+        <!-- Step 2.5: first-leg trip -->
+        <section class="flow-card is-dim" id="cardBoard1">
+          <div class="flow-card-head">
+            <p class="step-kicker">第 2b 步</p>
+            <h2>第一程上邊班？</h2>
+          </div>
+          <p class="hint" id="board1Hint">定位並揀好第一程路線後，會顯示可揀班次。</p>
+          <div class="seg" role="radiogroup" aria-label="第一程班次方式">
+            <label class="seg-item">
+              <input type="radio" name="board1Mode" value="auto" checked />
+              <span>自動下一班</span>
+            </label>
+            <label class="seg-item">
+              <input type="radio" name="board1Mode" value="manual" />
+              <span>人手揀班次</span>
+            </label>
+          </div>
+          <div class="field" id="board1SelectWrap" hidden>
+            <label for="board1Eta">班次（喺建議上車站）</label>
+            <select id="board1Eta" disabled>
+              <option value="">未有班次</option>
+            </select>
+          </div>
+          <button class="chip-btn" id="refreshBoard1Btn" type="button" hidden>更新班次</button>
+        </section>
+
         <!-- Step 3 -->
         <section class="flow-card is-dim" id="cardPlan">
           <div class="flow-card-head">
@@ -113,7 +139,7 @@
             </label>
             <label class="seg-item">
               <input type="radio" name="planMode" value="manual" />
-              <span>人手揀</span>
+              <span>人手揀站</span>
             </label>
           </div>
           <p class="hint" id="modeHint">優先轉車兩站距離最短。</p>
