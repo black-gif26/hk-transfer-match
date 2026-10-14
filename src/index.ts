@@ -10,7 +10,7 @@ import {
   type Company,
 } from "./hk-transit";
 import { matchTransfer } from "./transfer";
-import { planTransfer, type PlanMode } from "./transfer-plan";
+import { planTransfer, resolveBoard1Context, type PlanMode } from "./transfer-plan";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -109,6 +109,43 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
     return json({ stops });
   }
 
+  if (request.method === "POST" && url.pathname === "/api/board1-departures") {
+    const body = (await request.json()) as {
+      origin?: { lat: number; long: number };
+      leg1?: {
+        co: Company;
+        route: string;
+        bound: Bound;
+        serviceType?: string;
+      };
+      bufferMinutes?: number;
+      preferredBoard1Eta?: string | null;
+    };
+    if (!body?.origin || !Number.isFinite(body.origin.lat) || !Number.isFinite(body.origin.long)) {
+      return error("需要出發地 origin.lat / origin.long");
+    }
+    if (!body.leg1?.route || !body.leg1.bound || !body.leg1.co) {
+      return error("需要第一程路線");
+    }
+    const ctx = await resolveBoard1Context({
+      origin: body.origin,
+      leg1: {
+        co: body.leg1.co,
+        route: body.leg1.route,
+        bound: body.leg1.bound,
+        serviceType: body.leg1.serviceType ?? "1",
+      },
+      bufferMinutes: body.bufferMinutes,
+      preferredBoard1Eta: body.preferredBoard1Eta,
+    });
+    return json({
+      board1: ctx.board1,
+      board1Departures: ctx.board1Departures,
+      board1EtaSource: ctx.board1EtaSource,
+      noteTc: `會喺「${ctx.board1.nameTc}」上第一程（距出發地約 ${ctx.board1.metersFromOrigin}m / ${ctx.board1.walkMinutesFromOrigin} 分）。`,
+    });
+  }
+
   if (request.method === "POST" && url.pathname === "/api/plan-transfer") {
     const body = (await request.json()) as {
       origin?: { lat: number; long: number };
@@ -128,6 +165,7 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       maxTransferMeters?: number;
       bufferMinutes?: number;
       limit?: number;
+      preferredBoard1Eta?: string | null;
     };
 
     if (!body?.origin || !Number.isFinite(body.origin.lat) || !Number.isFinite(body.origin.long)) {
@@ -162,6 +200,7 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       maxTransferMeters: body.maxTransferMeters,
       bufferMinutes: body.bufferMinutes,
       limit: body.limit,
+      preferredBoard1Eta: body.preferredBoard1Eta,
     });
     return json(plan);
   }
