@@ -30,16 +30,67 @@ export interface EtaItem {
   rmkTc: string;
 }
 
+import ctbStopFile from "../data/ctb-stops.json";
+
+type CtbStopRow = readonly [string, string, number, number];
+const ctbStops = ctbStopFile.stops as unknown as Record<string, CtbStopRow>;
+
 const KMB = "https://data.etabus.gov.hk/v1/transport/kmb";
 const CTB = "https://rt.data.gov.hk/v2/transport/citybus";
 
-type StopDirectory = Map<string, { nameTc: string; nameEn: string; lat: number; long: number }>;
+type StopPlace = { nameTc: string; nameEn: string; lat: number; long: number };
+type StopDirectory = Map<string, StopPlace>;
+
+/**
+ * Workers Free, Bundled, and temporary preview accounts allow 50 external
+ * subrequests per invocation. Stay under that; `limits.subrequests` cannot raise it.
+ */
+const SUBREQUEST_SAFE_LIMIT = 40;
+
+export class SubrequestBudget {
+  readonly limit: number;
+  private left: number;
+  /** Same-request dedupe. Do not share this promise across invocations. */
+  kmbDir: Promise<StopDirectory> | null = null;
+
+  constructor(limit = SUBREQUEST_SAFE_LIMIT) {
+    this.limit = limit;
+    this.left = limit;
+  }
+
+  get remaining() {
+    return this.left;
+  }
+
+  get used() {
+    return this.limit - this.left;
+  }
+
+  charge(n = 1) {
+    if (this.left < n) {
+      throw new Error("今次搜尋要查太多班次，請改行少啲站或者轉最少步行再試。");
+    }
+    this.left -= n;
+  }
+}
 
 let kmbStopDir: StopDirectory | null = null;
 let kmbStopDirAt = 0;
-const ctbStopCache = new Map<string, { nameTc: string; nameEn: string; lat: number; long: number }>();
+const ctbStopCache = new Map<string, StopPlace>();
 
-async function getJson<T>(url: string): Promise<T> {
+function ctbFromSnapshot(stopId: string): StopPlace | null {
+  const row = ctbStops[stopId];
+  if (!row) return null;
+  return {
+    nameTc: String(row[0]),
+    nameEn: String(row[1]),
+    lat: Number(row[2]),
+    long: Number(row[3]),
+  };
+}
+
+async function getJson<T>(url: string, budget?: SubrequestBudget): Promise<T> {
+  budget?.charge();
   const res = await fetch(url, {
     headers: { Accept: "application/json" },
   });
@@ -49,45 +100,75 @@ async function getJson<T>(url: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function mapPool<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  if (!items.length) return out;
+  let cursor = 0;
+  const workers = Math.min(size, items.length);
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        out[index] = await fn(items[index]);
+      }
+    }),
+  );
+  return out;
+}
+
 export async function getStop(
   co: Company,
   stopId: string,
-): Promise<{ nameTc: string; nameEn: string; lat: number; long: number }> {
+  budget?: SubrequestBudget,
+): Promise<StopPlace> {
   if (co === "KMB") {
-    const dir = await getKmbStopDirectory();
+    const dir = await getKmbStopDirectory(budget);
     const stop = dir.get(stopId);
     if (!stop) throw new Error(`搵唔到 KMB 車站 ${stopId}`);
     return stop;
   }
-  return getCtbStop(stopId);
+  const stop = await getCtbStop(stopId, budget);
+  if (!stop) throw new Error(`搵唔到城巴車站 ${stopId}`);
+  return stop;
 }
 
-async function getKmbStopDirectory(): Promise<StopDirectory> {
+async function getKmbStopDirectory(budget?: SubrequestBudget): Promise<StopDirectory> {
   const fresh = Date.now() - kmbStopDirAt < 6 * 60 * 60 * 1000;
   if (kmbStopDir && fresh) return kmbStopDir;
+  if (budget?.kmbDir) return budget.kmbDir;
 
-  type Row = { stop: string; name_tc: string; name_en: string; lat: string; long: string };
-  const json = await getJson<{ data: Row[] }>(`${KMB}/stop`);
-  const map: StopDirectory = new Map();
-  for (const row of json.data) {
-    map.set(row.stop, {
-      nameTc: row.name_tc,
-      nameEn: row.name_en,
-      lat: Number(row.lat),
-      long: Number(row.long),
-    });
-  }
-  kmbStopDir = map;
-  kmbStopDirAt = Date.now();
-  return map;
+  const loading = (async () => {
+    type Row = { stop: string; name_tc: string; name_en: string; lat: string; long: string };
+    const json = await getJson<{ data: Row[] }>(`${KMB}/stop`, budget);
+    const map: StopDirectory = new Map();
+    for (const row of json.data) {
+      map.set(row.stop, {
+        nameTc: row.name_tc,
+        nameEn: row.name_en,
+        lat: Number(row.lat),
+        long: Number(row.long),
+      });
+    }
+    kmbStopDir = map;
+    kmbStopDirAt = Date.now();
+    return map;
+  })();
+
+  if (budget) budget.kmbDir = loading;
+  return loading;
 }
 
-async function getCtbStop(stopId: string) {
-  const cached = ctbStopCache.get(stopId);
-  if (cached) return cached;
+function peekCtbStop(stopId: string): StopPlace | null {
+  return ctbFromSnapshot(stopId) ?? ctbStopCache.get(stopId) ?? null;
+}
+
+async function getCtbStop(stopId: string, budget?: SubrequestBudget): Promise<StopPlace | null> {
+  const known = peekCtbStop(stopId);
+  if (known) return known;
+  if (budget && budget.remaining < 1) return null;
   const stop = await getJson<{
     data: { stop: string; name_tc: string; name_en: string; lat: string; long: string };
-  }>(`${CTB}/stop/${stopId}`);
+  }>(`${CTB}/stop/${encodeURIComponent(stopId)}`, budget);
   const value = {
     nameTc: stop.data.name_tc,
     nameEn: stop.data.name_en,
@@ -233,19 +314,32 @@ export async function searchRoutes(query: string, limit = 8): Promise<RouteOptio
   return options.slice(0, cap);
 }
 
+function unresolvedStop(stopId: string, seq: number): StopInfo {
+  return {
+    stopId,
+    seq,
+    nameTc: stopId,
+    nameEn: stopId,
+    lat: Number.NaN,
+    long: Number.NaN,
+  };
+}
+
 export async function listRouteStops(
   co: Company,
   route: string,
   bound: Bound,
   serviceType = "1",
+  budget?: SubrequestBudget,
 ): Promise<StopInfo[]> {
   if (co === "KMB") {
     type Row = { stop: string; seq: string };
     const [json, dir] = await Promise.all([
       getJson<{ data: Row[] }>(
         `${KMB}/route-stop/${encodeURIComponent(route)}/${boundToKmbDir(bound)}/${encodeURIComponent(serviceType)}`,
+        budget,
       ),
-      getKmbStopDirectory(),
+      getKmbStopDirectory(budget),
     ]);
     return json.data
       .map((row) => {
@@ -255,8 +349,8 @@ export async function listRouteStops(
           seq: Number(row.seq),
           nameTc: stop?.nameTc ?? row.stop,
           nameEn: stop?.nameEn ?? row.stop,
-          lat: stop?.lat ?? 0,
-          long: stop?.long ?? 0,
+          lat: stop?.lat ?? Number.NaN,
+          long: stop?.long ?? Number.NaN,
         } satisfies StopInfo;
       })
       .sort((a, b) => a.seq - b.seq);
@@ -265,21 +359,43 @@ export async function listRouteStops(
   type Row = { stop: string; seq: number };
   const json = await getJson<{ data: Row[] }>(
     `${CTB}/route-stop/CTB/${encodeURIComponent(route)}/${boundToCtbDir(bound)}`,
+    budget,
   );
-  const stops = await Promise.all(
-    json.data.map(async (row) => {
-      const stop = await getCtbStop(row.stop);
-      return {
+  const rows = [...json.data].sort((a, b) => Number(a.seq) - Number(b.seq));
+  const stops = new Array<StopInfo>(rows.length);
+  const missing: number[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const known = peekCtbStop(row.stop);
+    if (known) {
+      stops[i] = {
         stopId: row.stop,
         seq: Number(row.seq),
-        nameTc: stop.nameTc,
-        nameEn: stop.nameEn,
-        lat: stop.lat,
-        long: stop.long,
-      } satisfies StopInfo;
-    }),
-  );
-  return stops.sort((a, b) => a.seq - b.seq);
+        nameTc: known.nameTc,
+        nameEn: known.nameEn,
+        lat: known.lat,
+        long: known.long,
+      };
+    } else {
+      missing.push(i);
+    }
+  }
+  // Workers allow 6 simultaneous connections. Snapshot hits do not fetch.
+  await mapPool(missing, 6, async (index) => {
+    const row = rows[index];
+    const stop = await getCtbStop(row.stop, budget);
+    stops[index] = stop
+      ? {
+          stopId: row.stop,
+          seq: Number(row.seq),
+          nameTc: stop.nameTc,
+          nameEn: stop.nameEn,
+          lat: stop.lat,
+          long: stop.long,
+        }
+      : unresolvedStop(row.stop, Number(row.seq));
+  });
+  return stops;
 }
 
 export async function listEtas(
@@ -287,6 +403,7 @@ export async function listEtas(
   route: string,
   stopId: string,
   serviceType = "1",
+  budget?: SubrequestBudget,
 ): Promise<EtaItem[]> {
   if (co === "KMB") {
     type Row = {
@@ -297,6 +414,7 @@ export async function listEtas(
     };
     const json = await getJson<{ data: Row[] }>(
       `${KMB}/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/${encodeURIComponent(serviceType)}`,
+      budget,
     );
     return json.data
       .filter((r) => !!r.eta)
@@ -317,6 +435,7 @@ export async function listEtas(
   };
   const json = await getJson<{ data: Row[] }>(
     `${CTB}/eta/CTB/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}`,
+    budget,
   );
   return json.data
     .filter((r) => !!r.eta)

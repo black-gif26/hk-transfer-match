@@ -3,6 +3,7 @@ import {
   estimateWalkMinutes,
   listEtas,
   listRouteStops,
+  SubrequestBudget,
   type Bound,
   type Company,
   type EtaItem,
@@ -66,6 +67,22 @@ export interface Board1Context {
   };
   board1Departures: Board1Departure[];
   board1EtaSource: "auto" | "manual";
+}
+
+async function mapPool<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  if (!items.length) return out;
+  let cursor = 0;
+  const workers = Math.min(size, items.length);
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        out[index] = await fn(items[index]);
+      }
+    }),
+  );
+  return out;
 }
 
 function parseEtaMs(iso: string): number {
@@ -137,6 +154,7 @@ export async function resolveBoard1Context(params: {
   leg1: RouteRef;
   bufferMinutes?: number;
   preferredBoard1Eta?: string | null;
+  budget?: SubrequestBudget;
 }): Promise<Board1Context & { stops1: StopInfo[] }> {
   const bufferMinutes = Math.max(0, params.bufferMinutes ?? 1);
   const nowMs = Date.now();
@@ -145,6 +163,7 @@ export async function resolveBoard1Context(params: {
     params.leg1.route,
     params.leg1.bound,
     params.leg1.serviceType,
+    params.budget,
   );
   if (!stops1.length) throw new Error("第一程未有車站資料");
 
@@ -159,6 +178,7 @@ export async function resolveBoard1Context(params: {
     params.leg1.route,
     nearest.stopId,
     params.leg1.serviceType,
+    params.budget,
   );
   const readyAtBoard1Ms = nowMs + (walkMinutesFromOrigin + bufferMinutes) * 60_000;
   const departures = buildBoard1Departures(board1Etas, readyAtBoard1Ms, nowMs);
@@ -236,8 +256,9 @@ async function scoreCandidate(params: {
   board1: StopInfo;
   board1Eta: string | null;
   nowMs: number;
+  budget?: SubrequestBudget;
 }): Promise<TransferCandidate> {
-  const { leg1, leg2, pair, bufferMinutes, board1, board1Eta, nowMs } = params;
+  const { leg1, leg2, pair, bufferMinutes, board1, board1Eta, nowMs, budget } = params;
 
   const miss = (scoreTc: string, leg1Eta: string | null = null): TransferCandidate => ({
     alight1: pair.alight1,
@@ -256,8 +277,8 @@ async function scoreCandidate(params: {
   });
 
   const [etas1Raw, etas2] = await Promise.all([
-    listEtas(leg1.co, leg1.route, pair.alight1.stopId, leg1.serviceType),
-    listEtas(leg2.co, leg2.route, pair.board2.stopId, leg2.serviceType),
+    listEtas(leg1.co, leg1.route, pair.alight1.stopId, leg1.serviceType, budget),
+    listEtas(leg2.co, leg2.route, pair.board2.stopId, leg2.serviceType, budget),
   ]);
 
   // Only use alight ETAs that can belong to the bus you board at board1.
@@ -332,11 +353,13 @@ export async function planTransfer(params: {
   bufferMinutes?: number;
   limit?: number;
   preferredBoard1Eta?: string | null;
+  budget?: SubrequestBudget;
 }): Promise<TransferPlanResult> {
   const maxTransferMeters = Math.min(Math.max(params.maxTransferMeters ?? 450, 80), 1200);
   const bufferMinutes = Math.max(0, params.bufferMinutes ?? 1);
   const limit = Math.min(Math.max(params.limit ?? 8, 1), 20);
   const nowMs = Date.now();
+  const budget = params.budget ?? new SubrequestBudget();
 
   const [{ stops1, board1, board1Departures, board1EtaSource }, stops2] = await Promise.all([
     resolveBoard1Context({
@@ -344,8 +367,9 @@ export async function planTransfer(params: {
       leg1: params.leg1,
       bufferMinutes,
       preferredBoard1Eta: params.preferredBoard1Eta,
+      budget,
     }),
-    listRouteStops(params.leg2.co, params.leg2.route, params.leg2.bound, params.leg2.serviceType),
+    listRouteStops(params.leg2.co, params.leg2.route, params.leg2.bound, params.leg2.serviceType, budget),
   ]);
 
   if (!stops2.length) throw new Error("第二程未有車站資料");
@@ -374,11 +398,30 @@ export async function planTransfer(params: {
       board1,
       board1Eta,
       nowMs,
+      budget,
     });
 
+  // Each scored pair is two ETA fetches. Free/preview Workers stop at 50 subrequests.
+  const pairCap = Math.min(
+    params.mode === "fastest" ? 8 : limit,
+    Math.floor(budget.remaining / 2),
+  );
+  const shortlist = pairs.slice(0, Math.max(0, pairCap));
+  if (!shortlist.length) {
+    return {
+      mode: params.mode,
+      board1,
+      board1Departures,
+      board1EtaSource,
+      candidates: [],
+      summaryTc: `第一程最近上車站係「${board1.nameTc}」，今次未能再查第二程到站時間。請改最少步行或者稍後再試。`,
+    };
+  }
+
+  const scoredAll = await mapPool(shortlist, 3, scoreOne);
+
   if (params.mode === "shortest_walk" || params.mode === "manual") {
-    const top = pairs.slice(0, limit);
-    const scored = await Promise.all(top.map(scoreOne));
+    const scored = scoredAll;
     const summaryTc =
       params.mode === "manual"
         ? `已列出 ${scored.length} 個可揀轉乘站（由近至遠）。${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。`
@@ -393,9 +436,7 @@ export async function planTransfer(params: {
     };
   }
 
-  // fastest = earliest estimated second-bus boarding time
-  const shortlist = pairs.slice(0, Math.min(16, pairs.length));
-  const scored = await Promise.all(shortlist.map(scoreOne));
+  const scored = scoredAll;
 
   scored.sort((a, b) => {
     if (a.hasMatch !== b.hasMatch) return a.hasMatch ? -1 : 1;

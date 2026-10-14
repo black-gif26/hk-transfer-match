@@ -7,6 +7,7 @@ import {
   listRoutes,
   listStopServices,
   searchRoutes,
+  SubrequestBudget,
   type Bound,
   type Company,
 } from "./hk-transit";
@@ -27,6 +28,14 @@ function error(message: string, status = 400): Response {
   return json({ error: message }, status);
 }
 
+function clientMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : "未知錯誤";
+  if (message.includes("Too many subrequests")) {
+    return "今次搜尋要查太多班次，請改行少啲站或者轉最少步行再試。";
+  }
+  return message;
+}
+
 function asCompany(value: string | null): Company | null {
   if (value === "KMB" || value === "CTB") return value;
   return null;
@@ -45,7 +54,7 @@ export default {
       try {
         return await handleApi(request, url);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "未知錯誤";
+        const message = clientMessage(err);
         console.error(JSON.stringify({ level: "error", message }));
         return error(message, 502);
       }
@@ -57,7 +66,7 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.3.1" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.3.2" });
   }
 
   if (request.method === "GET" && url.pathname === "/api/nearby") {
@@ -110,7 +119,9 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
     const bound = asBound(url.searchParams.get("bound"));
     const serviceType = url.searchParams.get("serviceType") ?? "1";
     if (!co || !route || !bound) return error("需要 co、route、bound");
-    const stops = await listRouteStops(co, route, bound, serviceType);
+    const budget = new SubrequestBudget();
+    const stops = await listRouteStops(co, route, bound, serviceType, budget);
+    console.log(JSON.stringify({ level: "info", event: "stops", subrequests: budget.used }));
     return json({ stops });
   }
 
@@ -132,6 +143,7 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
     if (!body.leg1?.route || !body.leg1.bound || !body.leg1.co) {
       return error("需要第一程路線");
     }
+    const budget = new SubrequestBudget();
     const ctx = await resolveBoard1Context({
       origin: body.origin,
       leg1: {
@@ -142,7 +154,9 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       },
       bufferMinutes: body.bufferMinutes,
       preferredBoard1Eta: body.preferredBoard1Eta,
+      budget,
     });
+    console.log(JSON.stringify({ level: "info", event: "board1-departures", subrequests: budget.used }));
     return json({
       board1: ctx.board1,
       board1Departures: ctx.board1Departures,
@@ -187,6 +201,7 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       return error("mode 只可以係 shortest_walk / fastest / manual");
     }
 
+    const budget = new SubrequestBudget();
     const plan = await planTransfer({
       origin: body.origin,
       leg1: {
@@ -206,7 +221,9 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       bufferMinutes: body.bufferMinutes,
       limit: body.limit,
       preferredBoard1Eta: body.preferredBoard1Eta,
+      budget,
     });
+    console.log(JSON.stringify({ level: "info", event: "plan-transfer", subrequests: budget.used, mode }));
     return json(plan);
   }
 
@@ -234,20 +251,23 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       return error("需要 leg1 / leg2 嘅 stopId");
     }
 
+    const budget = new SubrequestBudget();
     const [stop1, stop2, etas1, etas2] = await Promise.all([
-      getStop(body.leg1.co, body.leg1.stopId),
-      getStop(body.leg2.co, body.leg2.stopId),
+      getStop(body.leg1.co, body.leg1.stopId, budget),
+      getStop(body.leg2.co, body.leg2.stopId, budget),
       listEtas(
         body.leg1.co,
         body.leg1.route,
         body.leg1.stopId,
         body.leg1.serviceType ?? "1",
+        budget,
       ),
       listEtas(
         body.leg2.co,
         body.leg2.route,
         body.leg2.stopId,
         body.leg2.serviceType ?? "1",
+        budget,
       ),
     ]);
 

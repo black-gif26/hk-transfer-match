@@ -8,6 +8,8 @@
       "enabled": true
     }
   },
+  // Free and temporary preview accounts hard-cap external subrequests at 50.
+  // Raising limits.subrequests does not apply there; the planner stays under 40.
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
