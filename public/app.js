@@ -3,6 +3,8 @@ const state = {
   locating: false,
   leg: { 1: null, 2: null },
   stops: { 1: [], 2: [] },
+  stopTouched: { 1: false, 2: false },
+  stopToken: { 1: 0, 2: 0 },
   suggest: [],
   activeLeg: null,
   highlight: 0,
@@ -194,19 +196,33 @@ function pick(leg, index) {
   if (!route) return;
   state.leg[leg] = route;
   hideSuggest();
+  state.stopTouched[leg] = false;
   renderChip(leg);
   const other = leg === 1 ? 2 : 1;
   if (!state.leg[other]) $(`q${other}`).focus();
+  fillStops(leg).catch(() => {});
   schedulePlan();
 }
 
 function clearLeg(leg) {
   state.leg[leg] = null;
+  state.stopTouched[leg] = false;
+  state.stops[leg] = [];
   $(`q${leg}`).value = "";
   renderChip(leg);
+  resetStopSelect(leg);
   hideSuggest();
   $(`q${leg}`).focus();
   schedulePlan();
+}
+
+function resetStopSelect(leg) {
+  const select = $(`stop${leg}`);
+  const label = $(`stopLabel${leg}`);
+  select.innerHTML = `<option value="">用建議站</option>`;
+  select.disabled = true;
+  select.value = "";
+  label.hidden = true;
 }
 
 function swapLegs() {
@@ -218,8 +234,12 @@ function swapLegs() {
   $("q1").value = state.leg[1] ? "" : second;
   $("q2").value = state.leg[2] ? "" : first;
   hideSuggest();
+  state.stopTouched[1] = false;
+  state.stopTouched[2] = false;
   renderChip(1);
   renderChip(2);
+  fillStops(1).catch(() => {});
+  fillStops(2).catch(() => {});
   schedulePlan();
 }
 
@@ -231,20 +251,18 @@ function refreshStatus(message) {
   if (!state.leg[1] || !state.leg[2]) {
     $("status").textContent = state.leg[1] || state.leg[2]
       ? "再揀另一程路線。"
-      : "輸入兩程路線，結果會自動出現。";
-    return;
-  }
-  if (!state.origin) {
-    $("status").textContent = "兩程已揀好。撳「用我的位置」，結果就會自動出。";
+      : "輸入兩程路線，結果會自動出現。唔使定位都得。";
     return;
   }
   if (state.plan?.candidates?.length) {
-    $("status").textContent = `已列出最接近的 ${state.plan.candidates.length} 班車。`;
+    $("status").textContent = state.origin
+      ? `已列出最接近的 ${state.plan.candidates.length} 班車。`
+      : `未用定位。已列出最接近的 ${state.plan.candidates.length} 班車。`;
   }
 }
 
 function readyToPlan() {
-  return !!(state.origin && state.leg[1] && state.leg[2]);
+  return !!(state.leg[1] && state.leg[2]);
 }
 
 function schedulePlan() {
@@ -326,9 +344,10 @@ function renderBoard(plan) {
 async function fillStops(leg, preferredId) {
   const route = state.leg[leg];
   const select = $(`stop${leg}`);
+  const label = $(`stopLabel${leg}`);
+  const token = ++state.stopToken[leg];
   if (!route) {
-    select.innerHTML = `<option value="">用建議站</option>`;
-    select.disabled = true;
+    resetStopSelect(leg);
     return;
   }
   const params = new URLSearchParams({
@@ -338,13 +357,17 @@ async function fillStops(leg, preferredId) {
     serviceType: route.serviceType,
   });
   const { stops } = await api(`/api/stops?${params}`);
+  if (token !== state.stopToken[leg] || state.leg[leg] !== route) return;
   state.stops[leg] = stops;
+  const keep = state.stopTouched[leg] ? select.value : "";
+  const next = preferredId || keep;
   fillingControls = true;
-  select.innerHTML = stops
+  select.innerHTML = `<option value="">用建議站</option>${stops
     .map((stop) => `<option value="${escapeHtml(stop.stopId)}">${stop.seq}. ${escapeHtml(stop.nameTc)}</option>`)
-    .join("");
+    .join("")}`;
   select.disabled = !stops.length;
-  if (preferredId && stops.some((stop) => stop.stopId === preferredId)) select.value = preferredId;
+  label.hidden = false;
+  if (next && [...select.options].some((option) => option.value === next)) select.value = next;
   fillingControls = false;
 }
 
@@ -383,10 +406,12 @@ async function applyCandidate(index, token = state.planToken) {
   const candidate = state.plan?.candidates?.[index];
   if (!candidate) return;
   state.selected = index;
+  const prefer1 = state.stopTouched[1] && $("stop1").value ? $("stop1").value : candidate.alight1.stopId;
+  const prefer2 = state.stopTouched[2] && $("stop2").value ? $("stop2").value : candidate.board2.stopId;
   try {
     await Promise.all([
-      fillStops(1, candidate.alight1.stopId),
-      fillStops(2, candidate.board2.stopId),
+      fillStops(1, prefer1),
+      fillStops(2, prefer2),
     ]);
   } catch {
     // The three closest buses can still be shown if the stop lists are busy.
@@ -508,7 +533,9 @@ function wireSearch(leg) {
   input.addEventListener("input", () => {
     if (state.leg[leg]) {
       state.leg[leg] = null;
+      state.stopTouched[leg] = false;
       renderChip(leg);
+      resetStopSelect(leg);
     }
     searchDebounced[leg]();
   });
@@ -604,7 +631,7 @@ async function bootLocation() {
     locate();
     return;
   }
-  $("originSub").textContent = permission === "denied" ? geoErrorMessage({ code: 1 }) : "撳一下允許定位";
+    $("originSub").textContent = permission === "denied" ? geoErrorMessage({ code: 1 }) : "可選。唔使定位都搜到";
 }
 
 wireSearch(1);
@@ -623,8 +650,14 @@ $("board1Eta").addEventListener("change", () => {
 $("bufferMinutes").addEventListener("change", debounce(() => schedulePlan(), 250));
 $("maxTransferMeters").addEventListener("change", debounce(() => schedulePlan(), 250));
 $("walkMinutes").addEventListener("change", debounce(() => onStopChange(), 250));
-$("stop1").addEventListener("change", onStopChange);
-$("stop2").addEventListener("change", onStopChange);
+$("stop1").addEventListener("change", () => {
+  if (!fillingControls) state.stopTouched[1] = true;
+  onStopChange();
+});
+$("stop2").addEventListener("change", () => {
+  if (!fillingControls) state.stopTouched[2] = true;
+  onStopChange();
+});
 
 bootLocation();
 refreshStatus();

@@ -66,7 +66,7 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.3.3" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.3.4" });
   }
 
   if (request.method === "GET" && url.pathname === "/api/nearby") {
@@ -187,9 +187,9 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       preferredBoard1Eta?: string | null;
     };
 
-    if (!body?.origin || !Number.isFinite(body.origin.lat) || !Number.isFinite(body.origin.long)) {
-      return error("需要出發地 origin.lat / origin.long");
-    }
+    const origin = body.origin && Number.isFinite(body.origin.lat) && Number.isFinite(body.origin.long)
+      ? body.origin
+      : null;
     if (!body.leg1?.route || !body.leg1.bound || !body.leg1.co) {
       return error("需要第一程路線");
     }
@@ -203,7 +203,7 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
 
     const budget = new SubrequestBudget();
     const plan = await planTransfer({
-      origin: body.origin,
+      origin,
       leg1: {
         co: body.leg1.co,
         route: body.leg1.route,

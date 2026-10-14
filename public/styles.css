@@ -106,6 +106,14 @@ body {
   align-items: center;
 }
 
+.stop-row:has(.leg-col) {
+  align-items: start;
+}
+
+.stop-row:has(.leg-col) .gutter {
+  padding-top: 17px;
+}
+
 .gutter {
   position: relative;
   display: grid;
@@ -193,11 +201,38 @@ body {
   color: var(--sea-deep);
 }
 
+.leg-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
 .field {
   display: flex;
   align-items: center;
   padding: 0 0.35rem 0 0.75rem;
   gap: 0.25rem;
+}
+
+.field-stop {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.field-stop select {
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  border-radius: 14px;
+  background: #f3f6f5;
+  color: var(--ink);
+  font-size: 16px;
+  padding: 0 0.75rem;
 }
 
 .field:focus-within {

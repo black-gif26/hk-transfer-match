@@ -33,28 +33,36 @@
             <div class="gutter" aria-hidden="true"><span class="pin me"></span></div>
             <button class="origin" id="originBtn" type="button">
               <span id="originLabel">用我的位置</span>
-              <small id="originSub">撳一下允許定位</small>
+              <small id="originSub">可選。唔使定位都搜到</small>
             </button>
           </div>
 
           <div class="stop-row">
             <div class="gutter" aria-hidden="true"><span class="pin n">1</span></div>
-            <div class="field" id="field1">
-              <input
-                id="q1"
-                placeholder="第一程路線，例如 1A"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="characters"
-                spellcheck="false"
-                enterkeyhint="search"
-                inputmode="text"
-                aria-label="第一程路線"
-                aria-autocomplete="list"
-                aria-controls="suggest"
-              />
-              <div class="chip" id="chip1" hidden></div>
-              <button class="clear" id="clear1" type="button" hidden aria-label="清除第一程">×</button>
+            <div class="leg-col">
+              <div class="field" id="field1">
+                <input
+                  id="q1"
+                  placeholder="第一程路線，例如 1A"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="characters"
+                  spellcheck="false"
+                  enterkeyhint="search"
+                  inputmode="text"
+                  aria-label="第一程路線"
+                  aria-autocomplete="list"
+                  aria-controls="suggest"
+                />
+                <div class="chip" id="chip1" hidden></div>
+                <button class="clear" id="clear1" type="button" hidden aria-label="清除第一程">×</button>
+              </div>
+              <label class="field-stop" id="stopLabel1" hidden>
+                改第一程落車站
+                <select id="stop1" disabled>
+                  <option value="">用建議站</option>
+                </select>
+              </label>
             </div>
           </div>
 
@@ -70,22 +78,30 @@
 
           <div class="stop-row">
             <div class="gutter" aria-hidden="true"><span class="pin n second">2</span></div>
-            <div class="field" id="field2">
-              <input
-                id="q2"
-                placeholder="第二程路線，例如 5"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="characters"
-                spellcheck="false"
-                enterkeyhint="search"
-                inputmode="text"
-                aria-label="第二程路線"
-                aria-autocomplete="list"
-                aria-controls="suggest"
-              />
-              <div class="chip" id="chip2" hidden></div>
-              <button class="clear" id="clear2" type="button" hidden aria-label="清除第二程">×</button>
+            <div class="leg-col">
+              <div class="field" id="field2">
+                <input
+                  id="q2"
+                  placeholder="第二程路線，例如 5"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="characters"
+                  spellcheck="false"
+                  enterkeyhint="search"
+                  inputmode="text"
+                  aria-label="第二程路線"
+                  aria-autocomplete="list"
+                  aria-controls="suggest"
+                />
+                <div class="chip" id="chip2" hidden></div>
+                <button class="clear" id="clear2" type="button" hidden aria-label="清除第二程">×</button>
+              </div>
+              <label class="field-stop" id="stopLabel2" hidden>
+                改第二程上車站
+                <select id="stop2" disabled>
+                  <option value="">用建議站</option>
+                </select>
+              </label>
             </div>
           </div>
         </div>
@@ -118,23 +134,11 @@
               <option value="">自動下一班</option>
             </select>
           </label>
-          <label>
-            改第一程落車站
-            <select id="stop1" disabled>
-              <option value="">用建議站</option>
-            </select>
-          </label>
-          <label>
-            改第二程上車站
-            <select id="stop2" disabled>
-              <option value="">用建議站</option>
-            </select>
-          </label>
         </div>
       </details>
 
       <p class="foot">資料：DATA.GOV.HK（KMB / Citybus）。轉乘站暫時以九巴座標為主。</p>
     </main>
-    <script type="module" src="/app.js?v=4"></script>
+    <script type="module" src="/app.js?v=5"></script>
   </body>
 </html>

@@ -150,7 +150,7 @@ function buildBoard1Departures(
 }
 
 export async function resolveBoard1Context(params: {
-  origin: { lat: number; long: number };
+  origin?: { lat: number; long: number } | null;
   leg1: RouteRef;
   bufferMinutes?: number;
   preferredBoard1Eta?: string | null;
@@ -167,12 +167,16 @@ export async function resolveBoard1Context(params: {
   );
   if (!stops1.length) throw new Error("第一程未有車站資料");
 
-  const nearest = pickNearestStop(params.origin, stops1);
-  const metersFromOrigin = Math.round(distanceMeters(params.origin, nearest));
-  const walkMinutesFromOrigin = Math.max(
-    1,
-    Math.ceil(metersFromOrigin / ((4.5 * 1000) / 60)),
-  );
+  const origin = params.origin && Number.isFinite(params.origin.lat) && Number.isFinite(params.origin.long)
+    ? params.origin
+    : null;
+  const nearest = origin
+    ? pickNearestStop(origin, stops1)
+    : stops1.find((stop) => Number.isFinite(stop.lat) && Number.isFinite(stop.long)) ?? stops1[0];
+  const metersFromOrigin = origin ? Math.round(distanceMeters(origin, nearest)) : 0;
+  const walkMinutesFromOrigin = origin
+    ? Math.max(1, Math.ceil(metersFromOrigin / ((4.5 * 1000) / 60)))
+    : 0;
   const board1Etas = await listEtas(
     params.leg1.co,
     params.leg1.route,
@@ -368,7 +372,7 @@ async function scoreCandidate(params: {
 }
 
 export async function planTransfer(params: {
-  origin: { lat: number; long: number };
+  origin?: { lat: number; long: number } | null;
   leg1: RouteRef;
   leg2: RouteRef;
   mode: PlanMode;
@@ -435,7 +439,8 @@ export async function planTransfer(params: {
 
   if (params.mode === "shortest_walk" || params.mode === "manual") {
     const scored = scoredAll;
-    const summaryTc = `最接近的 ${scored.length} 班車。最近轉乘約 ${scored[0].walkMeters}m，${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。`;
+    const where = params.origin ? "" : `未用定位，由「${board1.nameTc}」計。`;
+  const summaryTc = `${where}最接近的 ${scored.length} 班車。最近轉乘約 ${scored[0].walkMeters}m，${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。`;
     return {
       mode: params.mode,
       board1,
@@ -462,10 +467,11 @@ export async function planTransfer(params: {
   const top = scored.slice(0, CLOSEST_BUSES);
   const best = top.find((c) => c.hasMatch) ?? top[0];
   let summaryTc: string;
+  const where = params.origin ? `行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，` : `未用定位，由「${board1.nameTc}」計。`;
   if (best?.hasMatch && board1Eta && best.leg1Eta && best.leg2Eta) {
-    summaryTc = `最接近的 ${top.length} 班車。行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，${fmtHkHm(board1Eta)} 上第一程 → 約 ${fmtHkHm(best.leg2Eta)} 上第二程（轉車 ${best.walkMeters}m）。`;
+    summaryTc = `最接近的 ${top.length} 班車。${where}${fmtHkHm(board1Eta)} 上第一程 → 約 ${fmtHkHm(best.leg2Eta)} 上第二程（轉車 ${best.walkMeters}m）。`;
   } else {
-    summaryTc = `最接近的 ${top.length} 班車。${tripLabel}第一程約 ${fmtHkHm(board1Eta)} 喺「${board1.nameTc}」上車，最近轉乘約 ${best?.walkMeters ?? "—"}m。`;
+    summaryTc = `最接近的 ${top.length} 班車。${where}${tripLabel}第一程約 ${fmtHkHm(board1Eta)} 上車，最近轉乘約 ${best?.walkMeters ?? "—"}m。`;
   }
 
   return {
