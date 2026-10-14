@@ -36,6 +36,15 @@ export interface TransferCandidate {
   scoreTc: string;
 }
 
+export interface Board1Departure {
+  eta: string;
+  etaSeq: number;
+  destTc: string;
+  catchable: boolean;
+  inMinutes: number;
+  labelTc: string;
+}
+
 export interface TransferPlanResult {
   mode: PlanMode;
   board1: StopInfo & {
@@ -43,8 +52,20 @@ export interface TransferPlanResult {
     walkMinutesFromOrigin: number;
     boardEta: string | null;
   };
+  board1Departures: Board1Departure[];
+  board1EtaSource: "auto" | "manual";
   candidates: TransferCandidate[];
   summaryTc: string;
+}
+
+export interface Board1Context {
+  board1: StopInfo & {
+    metersFromOrigin: number;
+    walkMinutesFromOrigin: number;
+    boardEta: string | null;
+  };
+  board1Departures: Board1Departure[];
+  board1EtaSource: "auto" | "manual";
 }
 
 function parseEtaMs(iso: string): number {
@@ -87,6 +108,80 @@ function pickCatchableEta(
 ): EtaItem | null {
   const sorted = [...etas].sort((a, b) => a.eta.localeCompare(b.eta));
   return sorted.find((e) => parseEtaMs(e.eta) >= readyMs) ?? null;
+}
+
+function buildBoard1Departures(
+  etas: EtaItem[],
+  readyMs: number,
+  nowMs: number,
+): Board1Departure[] {
+  return [...etas]
+    .filter((e) => !!e.eta)
+    .sort((a, b) => a.eta.localeCompare(b.eta))
+    .map((e) => {
+      const catchable = parseEtaMs(e.eta) >= readyMs;
+      const inMinutes = minutesFromNow(e.eta, nowMs) ?? 0;
+      return {
+        eta: e.eta,
+        etaSeq: e.etaSeq,
+        destTc: e.destTc,
+        catchable,
+        inMinutes,
+        labelTc: `${fmtHkHm(e.eta)}（${inMinutes} 分後）${catchable ? " · 趕得切" : " · 可能趕唔切"}${e.destTc ? ` → ${e.destTc}` : ""}`,
+      };
+    });
+}
+
+export async function resolveBoard1Context(params: {
+  origin: { lat: number; long: number };
+  leg1: RouteRef;
+  bufferMinutes?: number;
+  preferredBoard1Eta?: string | null;
+}): Promise<Board1Context & { stops1: StopInfo[] }> {
+  const bufferMinutes = Math.max(0, params.bufferMinutes ?? 1);
+  const nowMs = Date.now();
+  const stops1 = await listRouteStops(
+    params.leg1.co,
+    params.leg1.route,
+    params.leg1.bound,
+    params.leg1.serviceType,
+  );
+  if (!stops1.length) throw new Error("第一程未有車站資料");
+
+  const nearest = pickNearestStop(params.origin, stops1);
+  const metersFromOrigin = Math.round(distanceMeters(params.origin, nearest));
+  const walkMinutesFromOrigin = Math.max(
+    1,
+    Math.ceil(metersFromOrigin / ((4.5 * 1000) / 60)),
+  );
+  const board1Etas = await listEtas(
+    params.leg1.co,
+    params.leg1.route,
+    nearest.stopId,
+    params.leg1.serviceType,
+  );
+  const readyAtBoard1Ms = nowMs + (walkMinutesFromOrigin + bufferMinutes) * 60_000;
+  const departures = buildBoard1Departures(board1Etas, readyAtBoard1Ms, nowMs);
+
+  const preferred = params.preferredBoard1Eta?.trim() || null;
+  const preferredHit = preferred
+    ? departures.find((d) => d.eta === preferred) ?? null
+    : null;
+  const auto = pickCatchableEta(board1Etas, readyAtBoard1Ms);
+  const board1Eta = preferredHit?.eta ?? auto?.eta ?? departures[0]?.eta ?? null;
+  const board1EtaSource: "auto" | "manual" = preferredHit ? "manual" : "auto";
+
+  return {
+    stops1,
+    board1Departures: departures,
+    board1EtaSource,
+    board1: {
+      ...nearest,
+      metersFromOrigin,
+      walkMinutesFromOrigin,
+      boardEta: board1Eta,
+    },
+  };
 }
 
 function buildPairs(
@@ -236,49 +331,35 @@ export async function planTransfer(params: {
   maxTransferMeters?: number;
   bufferMinutes?: number;
   limit?: number;
+  preferredBoard1Eta?: string | null;
 }): Promise<TransferPlanResult> {
   const maxTransferMeters = Math.min(Math.max(params.maxTransferMeters ?? 450, 80), 1200);
   const bufferMinutes = Math.max(0, params.bufferMinutes ?? 1);
   const limit = Math.min(Math.max(params.limit ?? 8, 1), 20);
   const nowMs = Date.now();
 
-  const [stops1, stops2] = await Promise.all([
-    listRouteStops(params.leg1.co, params.leg1.route, params.leg1.bound, params.leg1.serviceType),
+  const [{ stops1, board1, board1Departures, board1EtaSource }, stops2] = await Promise.all([
+    resolveBoard1Context({
+      origin: params.origin,
+      leg1: params.leg1,
+      bufferMinutes,
+      preferredBoard1Eta: params.preferredBoard1Eta,
+    }),
     listRouteStops(params.leg2.co, params.leg2.route, params.leg2.bound, params.leg2.serviceType),
   ]);
 
-  if (!stops1.length) throw new Error("第一程未有車站資料");
   if (!stops2.length) throw new Error("第二程未有車站資料");
 
-  const nearest = pickNearestStop(params.origin, stops1);
-  const metersFromOrigin = Math.round(distanceMeters(params.origin, nearest));
-  const walkMinutesFromOrigin = Math.max(
-    1,
-    Math.ceil(metersFromOrigin / ((4.5 * 1000) / 60)),
-  );
-
-  const board1Etas = await listEtas(
-    params.leg1.co,
-    params.leg1.route,
-    nearest.stopId,
-    params.leg1.serviceType,
-  );
-  const readyAtBoard1Ms = nowMs + (walkMinutesFromOrigin + bufferMinutes) * 60_000;
-  const catchable = pickCatchableEta(board1Etas, readyAtBoard1Ms);
-  const board1Eta = catchable?.eta ?? board1Etas[0]?.eta ?? null;
-
-  const board1 = {
-    ...nearest,
-    metersFromOrigin,
-    walkMinutesFromOrigin,
-    boardEta: board1Eta,
-  };
+  const board1Eta = board1.boardEta;
+  const tripLabel = board1EtaSource === "manual" ? "你揀嘅班次" : "自動班次";
 
   const pairs = buildPairs(stops1, stops2, board1.seq, maxTransferMeters);
   if (!pairs.length) {
     return {
       mode: params.mode,
       board1,
+      board1Departures,
+      board1EtaSource,
       candidates: [],
       summaryTc: `第一程最近上車站係「${board1.nameTc}」，但兩程喺 ${maxTransferMeters}m 內搵唔到可步行轉乘站。可改人手選擇或加大步行範圍。`,
     };
@@ -300,9 +381,16 @@ export async function planTransfer(params: {
     const scored = await Promise.all(top.map(scoreOne));
     const summaryTc =
       params.mode === "manual"
-        ? `已列出 ${scored.length} 個可揀轉乘站（由近至遠）。預計第一程上車 ${fmtHkHm(board1Eta)}。`
-        : `最少步行：最近轉乘約 ${scored[0].walkMeters}m。預計第一程上車 ${fmtHkHm(board1Eta)}，第二程上車 ${fmtHkHm(scored[0].leg2Eta)}。`;
-    return { mode: params.mode, board1, candidates: scored, summaryTc };
+        ? `已列出 ${scored.length} 個可揀轉乘站（由近至遠）。${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。`
+        : `最少步行：最近轉乘約 ${scored[0].walkMeters}m。${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}，第二程上車 ${fmtHkHm(scored[0].leg2Eta)}。`;
+    return {
+      mode: params.mode,
+      board1,
+      board1Departures,
+      board1EtaSource,
+      candidates: scored,
+      summaryTc,
+    };
   }
 
   // fastest = earliest estimated second-bus boarding time
@@ -324,10 +412,17 @@ export async function planTransfer(params: {
   const best = top.find((c) => c.hasMatch) ?? top[0];
   let summaryTc: string;
   if (best?.hasMatch && board1Eta && best.leg1Eta && best.leg2Eta) {
-    summaryTc = `上車時間估算：行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，預計 ${fmtHkHm(board1Eta)} 上第一程 → ${fmtHkHm(best.leg1Eta)} 落車轉「${best.alight1.nameTc} → ${best.board2.nameTc}」→ 約 ${fmtHkHm(best.leg2Eta)} 上第二程。`;
+    summaryTc = `上車時間估算（${tripLabel}）：行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，${fmtHkHm(board1Eta)} 上第一程 → ${fmtHkHm(best.leg1Eta)} 落車轉「${best.alight1.nameTc} → ${best.board2.nameTc}」→ 約 ${fmtHkHm(best.leg2Eta)} 上第二程。`;
   } else {
-    summaryTc = `預計第一程約 ${fmtHkHm(board1Eta)} 喺「${board1.nameTc}」上車；附近轉乘站暫時未有「上車→落車→再上車」時間順序合理嘅 ETA（長途線常見，因為落車站 ETA 仲未出）。可改最少步行或人手選擇。`;
+    summaryTc = `${tripLabel}第一程約 ${fmtHkHm(board1Eta)} 喺「${board1.nameTc}」上車；附近轉乘站暫時未有「上車→落車→再上車」時間順序合理嘅 ETA（長途線常見）。可改最少步行、換班次或人手選擇。`;
   }
 
-  return { mode: "fastest", board1, candidates: top, summaryTc };
+  return {
+    mode: "fastest",
+    board1,
+    board1Departures,
+    board1EtaSource,
+    candidates: top,
+    summaryTc,
+  };
 }
