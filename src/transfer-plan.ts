@@ -452,19 +452,20 @@ export async function planTransfer(params: {
       budget,
     });
 
-  // Show the closest transfers only. Each one costs two ETA fetches.
-  const closest = pairs.slice(0, Math.min(CLOSEST_BUSES, limit, pairs.length));
-  const pairCap = Math.min(closest.length, Math.floor(budget.remaining / 2));
-  const shortlist = closest.slice(0, Math.max(0, pairCap));
+  // ETA-score only the closest few (two fetches each). List every other
+  // feasible interchange by walk, without times, until the user picks one.
+  const listed = pairs.slice(0, Math.min(limit, pairs.length));
+  const scoreCount = Math.min(CLOSEST_BUSES, listed.length, Math.floor(budget.remaining / 2));
+  const shortlist = listed.slice(0, Math.max(0, scoreCount));
   const scoredAll = [
     ...(shortlist.length ? await mapPool(shortlist, 3, scoreOne) : []),
-    ...closest.slice(pairCap).map((pair) => bareCandidate(pair, board1Eta)),
+    ...listed.slice(scoreCount).map((pair) => bareCandidate(pair, board1Eta)),
   ];
 
   if (params.mode === "shortest_walk" || params.mode === "manual") {
     const scored = scoredAll;
     const where = params.origin ? "" : `未用定位，由「${board1.nameTc}」計。`;
-  const summaryTc = `${where}最接近的 ${scored.length} 班車。最近轉乘約 ${scored[0].walkMeters}m，${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。`;
+    const summaryTc = `${where}有 ${scored.length} 個可轉車站。最近約 ${scored[0].walkMeters}m，${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。`;
     return {
       mode: params.mode,
       board1,
@@ -488,14 +489,13 @@ export async function planTransfer(params: {
     return a.walkMeters - b.walkMeters;
   });
 
-  const top = scored.slice(0, CLOSEST_BUSES);
-  const best = top.find((c) => c.hasMatch) ?? top[0];
+  const best = scored.find((c) => c.hasMatch) ?? scored[0];
   let summaryTc: string;
   const where = params.origin ? `行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，` : `未用定位，由「${board1.nameTc}」計。`;
   if (best?.hasMatch && board1Eta && best.leg1Eta && best.leg2Eta) {
-    summaryTc = `最接近的 ${top.length} 班車。${where}${fmtHkHm(board1Eta)} 上第一程 → 約 ${fmtHkHm(best.leg2Eta)} 上第二程（轉車 ${best.walkMeters}m）。`;
+    summaryTc = `有 ${scored.length} 個可轉車站。${where}${fmtHkHm(board1Eta)} 上第一程 → 約 ${fmtHkHm(best.leg2Eta)} 上第二程（轉車 ${best.walkMeters}m）。`;
   } else {
-    summaryTc = `最接近的 ${top.length} 班車。${where}${tripLabel}第一程約 ${fmtHkHm(board1Eta)} 上車，最近轉乘約 ${best?.walkMeters ?? "—"}m。`;
+    summaryTc = `有 ${scored.length} 個可轉車站。${where}${tripLabel}第一程約 ${fmtHkHm(board1Eta)} 上車，最近轉乘約 ${best?.walkMeters ?? "—"}m。`;
   }
 
   return {
@@ -503,7 +503,7 @@ export async function planTransfer(params: {
     board1,
     board1Departures,
     board1EtaSource,
-    candidates: top,
+    candidates: scored,
     summaryTc,
   };
 }

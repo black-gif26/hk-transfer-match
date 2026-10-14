@@ -257,7 +257,7 @@ function refreshStatus(message) {
   }
   if (state.plan?.candidates?.length) {
     const located = state.origin ? "" : "未用定位。";
-    $("status").textContent = `${located}第 3 步可以揀轉車站，而家有 ${state.plan.candidates.length} 個。`;
+    $("status").textContent = `${located}可轉車站有 ${state.plan.candidates.length} 個，撳一下就用。`;
   }
 }
 
@@ -307,7 +307,7 @@ async function runPlan() {
         mode: state.mode,
         maxTransferMeters: Number($("maxTransferMeters").value || 450),
         bufferMinutes: Number($("bufferMinutes").value || 1),
-        limit: 3,
+        limit: 12,
         preferredBoard1Eta: preferredBoard1Eta(),
         board1StopId: state.stopTouched[1] ? $("stop1").value || null : null,
         alight2StopId: state.stopTouched[2] ? $("stop2").value || null : null,
@@ -408,6 +408,25 @@ async function runMatch(candidate) {
   });
 }
 
+function minutesUntil(iso) {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return null;
+  return Math.max(0, Math.round(ms / 60000));
+}
+
+function applyMatchToCandidate(candidate, match) {
+  if (!candidate || candidate.hasMatch || !match) return;
+  const pair = match.pairs?.find((item) => item.status !== "miss" && item.leg2Eta);
+  if (!pair) return;
+  candidate.hasMatch = true;
+  candidate.leg1Eta = pair.leg1Eta;
+  candidate.leg2Eta = pair.leg2Eta;
+  candidate.readyAt = pair.readyAt;
+  candidate.waitMinutes = pair.waitMinutes;
+  candidate.gapMinutes = pair.gapMinutes;
+  candidate.board2InMinutes = minutesUntil(pair.leg2Eta);
+}
+
 async function applyCandidate(index, token = state.planToken) {
   const candidate = state.plan?.candidates?.[index];
   if (!candidate) return;
@@ -426,6 +445,7 @@ async function applyCandidate(index, token = state.planToken) {
   $("walkMinutes").value = String(candidate.walkMinutes);
   try {
     state.match = await runMatch(candidate);
+    applyMatchToCandidate(candidate, state.match);
   } catch {
     state.match = null;
   }
@@ -436,41 +456,35 @@ async function applyCandidate(index, token = state.planToken) {
 }
 
 function hideTransfer() {
-  const row = $("transferRow");
-  const select = $("transferStop");
-  row.hidden = true;
-  fillingControls = true;
-  select.innerHTML = `<option value="">用建議站</option>`;
-  select.value = "";
-  fillingControls = false;
+  $("transferRow").hidden = true;
+  $("transferList").innerHTML = "";
 }
 
-function transferLabel(candidate) {
-  const when = candidate.board2InMinutes == null ? "未有時間" : `${candidate.board2InMinutes} 分鐘後`;
-  return `${when} · 落 ${candidate.alight1.nameTc} → ${candidate.walkMeters}m → 上 ${candidate.board2.nameTc}`;
+function transferParts(candidate) {
+  const title = `落 ${candidate.alight1.nameTc} → ${candidate.walkMeters}m → 上 ${candidate.board2.nameTc}`;
+  const meta = candidate.board2InMinutes == null
+    ? "未計班次，撳一下先查時間"
+    : `${candidate.board2InMinutes} 分鐘後上第二程`;
+  return { title, meta };
 }
 
 function renderTransferOptions() {
-  const select = $("transferStop");
+  const list = $("transferList");
   const row = $("transferRow");
   const candidates = state.plan?.candidates || [];
   if (!candidates.length) {
     hideTransfer();
     return;
   }
-  const keep = state.transferTouched ? select.value : "";
-  fillingControls = true;
-  select.innerHTML = `<option value="">用建議站</option>${candidates
-    .map((candidate, index) => `<option value="${index}">${escapeHtml(transferLabel(candidate))}</option>`)
-    .join("")}`;
-  select.disabled = false;
   row.hidden = false;
-  if (keep && [...select.options].some((option) => option.value === keep)) {
-    select.value = keep;
-  } else if (state.selected != null) {
-    select.value = String(state.selected);
-  }
-  fillingControls = false;
+  list.innerHTML = candidates.map((candidate, index) => {
+    const parts = transferParts(candidate);
+    const selected = index === state.selected;
+    return `<li><button type="button" class="${selected ? "is-on" : ""}" data-transfer="${index}" role="option" aria-selected="${selected}">
+      <strong>${escapeHtml(parts.title)}</strong>
+      <span>${escapeHtml(parts.meta)}</span>
+    </button></li>`;
+  }).join("");
 }
 
 function offStopName() {
@@ -684,19 +698,11 @@ $("stop2").addEventListener("change", () => {
   if (!fillingControls) state.stopTouched[2] = true;
   onStopChange();
 });
-$("transferStop").addEventListener("change", () => {
-  if (fillingControls || !state.plan?.candidates?.length) return;
-  const value = $("transferStop").value;
-  if (!value) {
-    state.transferTouched = false;
-    const firstGood = state.plan.candidates.findIndex((candidate) => candidate.hasMatch);
-    applyCandidate(firstGood >= 0 ? firstGood : 0).catch((err) => {
-      $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
-    });
-    return;
-  }
+$("transferList").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-transfer]");
+  if (!button || !state.plan?.candidates?.length) return;
   state.transferTouched = true;
-  applyCandidate(Number(value)).catch((err) => {
+  applyCandidate(Number(button.dataset.transfer)).catch((err) => {
     $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
   });
 });
