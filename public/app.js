@@ -5,6 +5,8 @@ const state = {
   plan: null,
   selectedCandidateIndex: null,
   match: null,
+  board1: null,
+  board1Departures: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -46,15 +48,27 @@ function selectedMode() {
   return document.querySelector('input[name="planMode"]:checked')?.value || "shortest_walk";
 }
 
+function board1Mode() {
+  return document.querySelector('input[name="board1Mode"]:checked')?.value || "auto";
+}
+
+function preferredBoard1Eta() {
+  if (board1Mode() !== "manual") return null;
+  return $("board1Eta").value || null;
+}
+
 function setStep(n) {
   document.querySelectorAll(".step").forEach((el) => {
     const s = Number(el.dataset.step);
     el.classList.toggle("is-current", s === n);
     el.classList.toggle("is-done", s < n);
   });
+  const hasRoute1 = !!parseRouteValue($("route1").value);
   $("cardOrigin").classList.toggle("is-ready", !!state.origin);
   $("cardRoutes").classList.toggle("is-dim", !state.origin);
   $("cardRoutes").classList.toggle("is-ready", !!state.origin);
+  $("cardBoard1").classList.toggle("is-dim", !(state.origin && hasRoute1));
+  $("cardBoard1").classList.toggle("is-ready", !!(state.origin && hasRoute1));
   $("cardPlan").classList.toggle("is-dim", !canPlan());
   $("cardPlan").classList.toggle("is-ready", canPlan());
 }
@@ -150,9 +164,67 @@ async function loadRoutes(leg) {
       .join("");
     select.disabled = false;
     await loadStops(leg);
+    if (leg === 1) await refreshBoard1Departures();
   } catch (err) {
     select.innerHTML = `<option value="">載入失敗</option>`;
     showOutputError(err.message);
+  }
+  refreshSticky();
+}
+
+function renderBoard1Departures(payload) {
+  state.board1 = payload.board1;
+  state.board1Departures = payload.board1Departures || [];
+  const select = $("board1Eta");
+  const wrap = $("board1SelectWrap");
+  const refreshBtn = $("refreshBoard1Btn");
+
+  $("board1Hint").textContent = payload.noteTc || "揀第一程上車班次。";
+  refreshBtn.hidden = false;
+
+  if (!state.board1Departures.length) {
+    select.innerHTML = `<option value="">暫時未有 ETA</option>`;
+    select.disabled = true;
+    wrap.hidden = board1Mode() !== "manual";
+    return;
+  }
+
+  const autoEta = payload.board1?.boardEta;
+  select.innerHTML = state.board1Departures
+    .map((d) => {
+      const mark = autoEta === d.eta ? "（自動建議）" : "";
+      return `<option value="${d.eta}">${d.labelTc}${mark}</option>`;
+    })
+    .join("");
+  select.disabled = false;
+  if (autoEta) select.value = autoEta;
+  wrap.hidden = board1Mode() !== "manual";
+}
+
+async function refreshBoard1Departures() {
+  if (!state.origin) return;
+  const leg1 = parseRouteValue($("route1").value);
+  if (!leg1) {
+    $("board1Hint").textContent = "先揀第一程路線同方向。";
+    $("board1SelectWrap").hidden = true;
+    $("refreshBoard1Btn").hidden = true;
+    return;
+  }
+
+  $("board1Hint").textContent = "更新緊第一程班次…";
+  try {
+    const data = await api("/api/board1-departures", {
+      method: "POST",
+      body: JSON.stringify({
+        origin: state.origin,
+        leg1,
+        bufferMinutes: Number($("bufferMinutes").value || 1),
+        preferredBoard1Eta: preferredBoard1Eta(),
+      }),
+    });
+    renderBoard1Departures(data);
+  } catch (err) {
+    $("board1Hint").textContent = err.message;
   }
   refreshSticky();
 }
@@ -228,6 +300,7 @@ async function locateOrigin() {
     $("originStatus").classList.add("ok");
     btn.textContent = "重新定位";
     $("cardRoutes").scrollIntoView({ behavior: "smooth", block: "start" });
+    await refreshBoard1Departures();
   } catch (err) {
     $("originStatus").textContent = geoErrorMessage(err);
     btn.textContent = "分享位置開始";
@@ -510,9 +583,17 @@ async function runPlan() {
         maxTransferMeters: Number($("maxTransferMeters").value || 450),
         bufferMinutes: Number($("bufferMinutes").value || 1),
         limit: mode === "manual" ? 12 : 8,
+        preferredBoard1Eta: preferredBoard1Eta(),
       }),
     });
     state.plan = plan;
+    if (plan.board1Departures?.length) {
+      renderBoard1Departures({
+        board1: plan.board1,
+        board1Departures: plan.board1Departures,
+        noteTc: `會喺「${plan.board1.nameTc}」上第一程（距出發地約 ${plan.board1.metersFromOrigin}m）。而家用${plan.board1EtaSource === "manual" ? "人手" : "自動"}班次 ${fmtTime(plan.board1.boardEta)}。`,
+      });
+    }
     renderOutput();
 
     if (mode === "manual") {
@@ -541,6 +622,7 @@ function wireLeg(leg) {
   $(`routeQuery${leg}`).addEventListener("input", loadRoutesDebounced);
   $(`route${leg}`).addEventListener("change", async () => {
     await loadStops(leg);
+    if (leg === 1) await refreshBoard1Departures();
     refreshSticky();
   });
   $(`stop${leg}Visible`).addEventListener("change", async () => {
@@ -566,6 +648,22 @@ document.querySelectorAll('input[name="planMode"]').forEach((input) => {
     }
   });
 });
+
+document.querySelectorAll('input[name="board1Mode"]').forEach((input) => {
+  input.addEventListener("change", () => {
+    const manual = board1Mode() === "manual";
+    $("board1SelectWrap").hidden = !manual;
+    if (manual && !state.board1Departures.length) refreshBoard1Departures();
+  });
+});
+
+$("refreshBoard1Btn").addEventListener("click", refreshBoard1Departures);
+$("bufferMinutes").addEventListener(
+  "change",
+  debounce(() => {
+    refreshBoard1Departures();
+  }, 300),
+);
 
 wireLeg(1);
 wireLeg(2);
