@@ -6,6 +6,7 @@ import {
   listRouteStops,
   listRoutes,
   listStopServices,
+  searchRoutes,
   type Bound,
   type Company,
 } from "./hk-transit";
@@ -56,7 +57,7 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.2.1" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.3.0" });
   }
 
   if (request.method === "GET" && url.pathname === "/api/nearby") {
@@ -93,8 +94,12 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
 
   if (request.method === "GET" && url.pathname === "/api/routes") {
     const co = asCompany(url.searchParams.get("co"));
-    if (!co) return error("需要 co=KMB 或 CTB");
     const q = url.searchParams.get("q") ?? "";
+    if (!co) {
+      const limit = Number(url.searchParams.get("limit") ?? "8");
+      const routes = await searchRoutes(q, Number.isFinite(limit) ? limit : 8);
+      return json({ routes });
+    }
     const routes = await listRoutes(co, q);
     return json({ routes });
   }

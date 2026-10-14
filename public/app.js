@@ -1,37 +1,43 @@
 const state = {
-  1: { routes: [], stops: [] },
-  2: { routes: [], stops: [] },
   origin: null,
+  locating: false,
+  leg: { 1: null, 2: null },
+  stops: { 1: [], 2: [] },
+  suggest: [],
+  activeLeg: null,
+  highlight: 0,
+  searchToken: { 1: 0, 2: 0 },
+  planToken: 0,
   plan: null,
-  selectedCandidateIndex: null,
+  selected: null,
   match: null,
-  board1: null,
-  board1Departures: [],
+  mode: "fastest",
 };
+
+let fillingControls = false;
 
 const $ = (id) => document.getElementById(id);
 
-const MODE_HINTS = {
-  shortest_walk: "優先轉車兩站距離最短。",
-  fastest: "由出發地計到第二程最早上車時間。",
-  manual: "列出可揀站，你自己決定；可開進階睇附近站。",
-};
-
 function debounce(fn, ms) {
-  let t;
+  let timer;
   return (...args) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
   };
 }
 
-function parseRouteValue(value) {
-  if (!value) return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[ch]));
+}
+
+function coName(co) {
+  return co === "CTB" ? "城巴" : "九巴";
 }
 
 function fmtTime(iso) {
@@ -42,61 +48,6 @@ function fmtTime(iso) {
     hour12: false,
     timeZone: "Asia/Hong_Kong",
   });
-}
-
-function selectedMode() {
-  return document.querySelector('input[name="planMode"]:checked')?.value || "shortest_walk";
-}
-
-function board1Mode() {
-  return document.querySelector('input[name="board1Mode"]:checked')?.value || "auto";
-}
-
-function preferredBoard1Eta() {
-  if (board1Mode() !== "manual") return null;
-  return $("board1Eta").value || null;
-}
-
-function setStep(n) {
-  document.querySelectorAll(".step").forEach((el) => {
-    const s = Number(el.dataset.step);
-    el.classList.toggle("is-current", s === n);
-    el.classList.toggle("is-done", s < n);
-  });
-  const hasRoute1 = !!parseRouteValue($("route1").value);
-  $("cardOrigin").classList.toggle("is-ready", !!state.origin);
-  $("cardRoutes").classList.toggle("is-dim", !state.origin);
-  $("cardRoutes").classList.toggle("is-ready", !!state.origin);
-  $("cardBoard1").classList.toggle("is-dim", !(state.origin && hasRoute1));
-  $("cardBoard1").classList.toggle("is-ready", !!(state.origin && hasRoute1));
-  $("cardPlan").classList.toggle("is-dim", !canPlan());
-  $("cardPlan").classList.toggle("is-ready", canPlan());
-}
-
-function canPlan() {
-  return !!(state.origin && parseRouteValue($("route1").value) && parseRouteValue($("route2").value));
-}
-
-function refreshSticky() {
-  const btn = $("planBtn");
-  if (!state.origin) {
-    $("stickyHint").textContent = "先分享位置";
-    btn.disabled = true;
-    btn.textContent = "開始搵轉乘";
-    setStep(1);
-    return;
-  }
-  if (!parseRouteValue($("route1").value) || !parseRouteValue($("route2").value)) {
-    $("stickyHint").textContent = "再揀兩程路線同方向";
-    btn.disabled = true;
-    btn.textContent = "開始搵轉乘";
-    setStep(2);
-    return;
-  }
-  $("stickyHint").textContent = "可以開始搵轉乘建議";
-  btn.disabled = false;
-  btn.textContent = "開始搵轉乘";
-  setStep(3);
 }
 
 async function api(path, options) {
@@ -110,158 +61,6 @@ async function api(path, options) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `請求失敗 ${res.status}`);
   return data;
-}
-
-function syncVisibleStops(leg) {
-  const hidden = $(`stop${leg}`);
-  const visible = $(`stop${leg}Visible`);
-  visible.innerHTML = hidden.innerHTML;
-  visible.disabled = hidden.disabled || !hidden.options.length;
-  visible.value = hidden.value;
-}
-
-async function loadRoutes(leg) {
-  const co = $(`co${leg}`).value;
-  const q = $(`routeQuery${leg}`).value.trim();
-  const select = $(`route${leg}`);
-  const stopSelect = $(`stop${leg}`);
-
-  if (!q) {
-    select.innerHTML = `<option value="">輸入路線後揀方向</option>`;
-    select.disabled = true;
-    stopSelect.innerHTML = "";
-    stopSelect.disabled = true;
-    syncVisibleStops(leg);
-    state[leg].routes = [];
-    state[leg].stops = [];
-    refreshSticky();
-    return;
-  }
-
-  select.disabled = true;
-  select.innerHTML = `<option value="">載入中…</option>`;
-
-  try {
-    const { routes } = await api(
-      `/api/routes?co=${encodeURIComponent(co)}&q=${encodeURIComponent(q)}`,
-    );
-    state[leg].routes = routes;
-    if (!routes.length) {
-      select.innerHTML = `<option value="">搵唔到路線</option>`;
-      refreshSticky();
-      return;
-    }
-    select.innerHTML = routes
-      .map(
-        (r) =>
-          `<option value='${JSON.stringify({
-            co: r.co,
-            route: r.route,
-            bound: r.bound,
-            serviceType: r.serviceType,
-          })}'>${r.labelTc}</option>`,
-      )
-      .join("");
-    select.disabled = false;
-    await loadStops(leg);
-    if (leg === 1) await refreshBoard1Departures();
-  } catch (err) {
-    select.innerHTML = `<option value="">載入失敗</option>`;
-    showOutputError(err.message);
-  }
-  refreshSticky();
-}
-
-function renderBoard1Departures(payload) {
-  state.board1 = payload.board1;
-  state.board1Departures = payload.board1Departures || [];
-  const select = $("board1Eta");
-  const wrap = $("board1SelectWrap");
-  const refreshBtn = $("refreshBoard1Btn");
-
-  $("board1Hint").textContent = payload.noteTc || "揀第一程上車班次。";
-  refreshBtn.hidden = false;
-
-  if (!state.board1Departures.length) {
-    select.innerHTML = `<option value="">暫時未有 ETA</option>`;
-    select.disabled = true;
-    wrap.hidden = board1Mode() !== "manual";
-    return;
-  }
-
-  const autoEta = payload.board1?.boardEta;
-  select.innerHTML = state.board1Departures
-    .map((d) => {
-      const mark = autoEta === d.eta ? "（自動建議）" : "";
-      return `<option value="${d.eta}">${d.labelTc}${mark}</option>`;
-    })
-    .join("");
-  select.disabled = false;
-  if (autoEta) select.value = autoEta;
-  wrap.hidden = board1Mode() !== "manual";
-}
-
-async function refreshBoard1Departures() {
-  if (!state.origin) return;
-  const leg1 = parseRouteValue($("route1").value);
-  if (!leg1) {
-    $("board1Hint").textContent = "先揀第一程路線同方向。";
-    $("board1SelectWrap").hidden = true;
-    $("refreshBoard1Btn").hidden = true;
-    return;
-  }
-
-  $("board1Hint").textContent = "更新緊第一程班次…";
-  try {
-    const data = await api("/api/board1-departures", {
-      method: "POST",
-      body: JSON.stringify({
-        origin: state.origin,
-        leg1,
-        bufferMinutes: Number($("bufferMinutes").value || 1),
-        preferredBoard1Eta: preferredBoard1Eta(),
-      }),
-    });
-    renderBoard1Departures(data);
-  } catch (err) {
-    $("board1Hint").textContent = err.message;
-  }
-  refreshSticky();
-}
-
-async function loadStops(leg, preferredStopId = null) {
-  const route = parseRouteValue($(`route${leg}`).value);
-  const stopSelect = $(`stop${leg}`);
-  if (!route) {
-    stopSelect.innerHTML = "";
-    stopSelect.disabled = true;
-    syncVisibleStops(leg);
-    return;
-  }
-
-  stopSelect.disabled = true;
-  const params = new URLSearchParams({
-    co: route.co,
-    route: route.route,
-    bound: route.bound,
-    serviceType: route.serviceType,
-  });
-
-  try {
-    const { stops } = await api(`/api/stops?${params}`);
-    state[leg].stops = stops;
-    stopSelect.innerHTML = stops
-      .map((s) => `<option value="${s.stopId}">${s.seq}. ${s.nameTc}</option>`)
-      .join("");
-    stopSelect.disabled = !stops.length;
-    if (preferredStopId && stops.some((s) => s.stopId === preferredStopId)) {
-      stopSelect.value = preferredStopId;
-    }
-  } catch (err) {
-    stopSelect.innerHTML = `<option value="">載入失敗</option>`;
-    showOutputError(err.message);
-  }
-  syncVisibleStops(leg);
 }
 
 function getCurrentPosition() {
@@ -280,395 +79,505 @@ function getCurrentPosition() {
 
 function geoErrorMessage(err) {
   if (!err) return "定位失敗";
-  if (err.code === 1) return "未授權定位。請喺 Safari 允許位置，並用 HTTPS 開啟。";
-  if (err.code === 2) return "暫時拎唔到位置，稍後再試。";
-  if (err.code === 3) return "定位逾時，請再試一次。";
+  if (err.code === 1) return "未授權位置。撳一下再允許。";
+  if (err.code === 2) return "暫時拎唔到位置，撳一下再試。";
+  if (err.code === 3) return "定位逾時，撳一下再試。";
   return err.message || "定位失敗";
 }
 
-async function locateOrigin() {
-  const btn = $("locateBtn");
-  btn.disabled = true;
-  btn.textContent = "定位中…";
-  $("originStatus").textContent = "正在拎你個位置…";
-  $("originStatus").classList.remove("ok");
+function hideSuggest() {
+  $("suggest").hidden = true;
+  $("suggest").innerHTML = "";
+  state.suggest = [];
+  state.activeLeg = null;
+}
 
-  try {
-    const pos = await getCurrentPosition();
-    state.origin = { lat: pos.coords.latitude, long: pos.coords.longitude };
-    $("originStatus").textContent = "已定位，可以揀兩程路線。";
-    $("originStatus").classList.add("ok");
-    btn.textContent = "重新定位";
-    $("cardRoutes").scrollIntoView({ behavior: "smooth", block: "start" });
-    await refreshBoard1Departures();
-  } catch (err) {
-    $("originStatus").textContent = geoErrorMessage(err);
-    btn.textContent = "分享位置開始";
-  } finally {
-    btn.disabled = false;
-    refreshSticky();
+function renderChip(leg) {
+  const route = state.leg[leg];
+  const chip = $(`chip${leg}`);
+  const input = $(`q${leg}`);
+  const clear = $(`clear${leg}`);
+  if (!route) {
+    chip.hidden = true;
+    chip.innerHTML = "";
+    input.hidden = false;
+    clear.hidden = true;
+    return;
   }
-}
-
-function showOutputError(message) {
-  $("output").innerHTML = `<div class="error">${message}</div>`;
-}
-
-function renderMatchInline(data) {
-  if (!data) return "";
-  const best = data.pairs.find((p) => p.status !== "miss") || data.pairs[0];
-  if (!best) return "";
-  const cls = best.status === "miss" ? "miss" : best.status === "tight" ? "tight" : "";
-  return `
-    <article class="pair ${cls}">
-      <div class="pair-top">
-        <strong>${data.hasMatch ? "時間 Match" : "未 Match"} · ${best.statusTc}</strong>
-      </div>
-      <div class="times">
-        <div>落車 ${fmtTime(best.leg1Eta)}</div>
-        <div>可行上第二程 ${fmtTime(best.readyAt)}</div>
-        <div>第二程上車 ${best.leg2Eta ? fmtTime(best.leg2Eta) : "—"}</div>
-      </div>
-    </article>
+  input.hidden = true;
+  input.value = "";
+  clear.hidden = false;
+  chip.hidden = false;
+  const special = route.serviceType !== "1" ? ` · 特別班 ${route.serviceType}` : "";
+  chip.innerHTML = `
+    <span class="no">${escapeHtml(route.route)}</span>
+    <span class="dir-text">
+      <strong>往 ${escapeHtml(route.destTc)}</strong>
+      <small>${coName(route.co)} · ${escapeHtml(route.origTc)}開出${escapeHtml(special)}</small>
+    </span>
   `;
 }
 
-async function runMatchQuiet() {
-  const route1 = parseRouteValue($("route1").value);
-  const route2 = parseRouteValue($("route2").value);
+function paintHighlight() {
+  $("suggest").querySelectorAll("button").forEach((button, index) => {
+    button.classList.toggle("is-on", index === state.highlight);
+  });
+}
+
+function renderSuggest(routes, leg) {
+  const list = $("suggest");
+  state.activeLeg = leg;
+  state.suggest = routes;
+  state.highlight = 0;
+  list.hidden = false;
+  if (!routes.length) {
+    list.innerHTML = `<li class="empty">搵唔到呢條路線</li>`;
+    return;
+  }
+  list.innerHTML = routes
+    .map((route, index) => {
+      const special = route.serviceType !== "1" ? ` · 特別班 ${route.serviceType}` : "";
+      return `
+        <li>
+          <button type="button" role="option" data-i="${index}" class="${index === 0 ? "is-on" : ""}">
+            <span class="no">${escapeHtml(route.route)}</span>
+            <span class="text">
+              <strong>往 ${escapeHtml(route.destTc)}</strong>
+              <small>${coName(route.co)} · ${escapeHtml(route.origTc)}開出${escapeHtml(special)}</small>
+            </span>
+          </button>
+        </li>
+      `;
+    })
+    .join("");
+  list.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => pick(leg, Number(button.dataset.i)));
+  });
+}
+
+async function search(leg) {
+  const query = $(`q${leg}`).value.trim();
+  const token = ++state.searchToken[leg];
+  if (!query) {
+    if (state.activeLeg === leg) hideSuggest();
+    return;
+  }
+  $("suggest").hidden = false;
+  $("suggest").innerHTML = `<li class="empty">搜尋中…</li>`;
+  state.activeLeg = leg;
+  try {
+    const data = await api(`/api/routes?q=${encodeURIComponent(query)}&limit=8`);
+    if (token !== state.searchToken[leg]) return;
+    if (document.activeElement !== $(`q${leg}`)) return;
+    renderSuggest(data.routes || [], leg);
+  } catch (err) {
+    if (token !== state.searchToken[leg]) return;
+    $("suggest").hidden = false;
+    $("suggest").innerHTML = `<li class="empty">${escapeHtml(err.message)}</li>`;
+  }
+}
+
+const searchDebounced = {
+  1: debounce(() => search(1), 220),
+  2: debounce(() => search(2), 220),
+};
+
+function pick(leg, index) {
+  const route = state.suggest[index];
+  if (!route) return;
+  state.leg[leg] = route;
+  hideSuggest();
+  renderChip(leg);
+  const other = leg === 1 ? 2 : 1;
+  if (!state.leg[other]) $(`q${other}`).focus();
+  schedulePlan();
+}
+
+function clearLeg(leg) {
+  state.leg[leg] = null;
+  $(`q${leg}`).value = "";
+  renderChip(leg);
+  hideSuggest();
+  $(`q${leg}`).focus();
+  schedulePlan();
+}
+
+function swapLegs() {
+  const previous = state.leg[1];
+  state.leg[1] = state.leg[2];
+  state.leg[2] = previous;
+  const first = $("q1").value;
+  const second = $("q2").value;
+  $("q1").value = state.leg[1] ? "" : second;
+  $("q2").value = state.leg[2] ? "" : first;
+  hideSuggest();
+  renderChip(1);
+  renderChip(2);
+  schedulePlan();
+}
+
+function refreshStatus(message) {
+  if (message) {
+    $("status").textContent = message;
+    return;
+  }
+  if (!state.leg[1] || !state.leg[2]) {
+    $("status").textContent = state.leg[1] || state.leg[2]
+      ? "再揀另一程路線。"
+      : "輸入兩程路線，結果會自動出現。";
+    return;
+  }
+  if (!state.origin) {
+    $("status").textContent = "兩程已揀好。撳「用我的位置」，結果就會自動出。";
+    return;
+  }
+  if (state.plan?.candidates?.length) {
+    $("status").textContent = `已搵到 ${state.plan.candidates.length} 個轉乘，最快嗰個已經展開。`;
+  }
+}
+
+function readyToPlan() {
+  return !!(state.origin && state.leg[1] && state.leg[2]);
+}
+
+function schedulePlan() {
+  if (!readyToPlan()) {
+    state.planToken += 1;
+    state.plan = null;
+    state.match = null;
+    state.selected = null;
+    $("results").innerHTML = "";
+    refreshStatus();
+    return;
+  }
+  runPlan();
+}
+
+function preferredBoard1Eta() {
+  return $("board1Eta").value || null;
+}
+
+async function runPlan() {
+  if (!readyToPlan()) return;
+  const token = ++state.planToken;
+  refreshStatus("計緊邊個站轉得最快…");
+  $("results").innerHTML = `<p class="loading">搵緊轉乘…</p>`;
+  const legPayload = (leg) => ({
+    co: leg.co,
+    route: leg.route,
+    bound: leg.bound,
+    serviceType: leg.serviceType,
+  });
+  try {
+    const plan = await api("/api/plan-transfer", {
+      method: "POST",
+      body: JSON.stringify({
+        origin: state.origin,
+        leg1: legPayload(state.leg[1]),
+        leg2: legPayload(state.leg[2]),
+        mode: state.mode,
+        maxTransferMeters: Number($("maxTransferMeters").value || 450),
+        bufferMinutes: Number($("bufferMinutes").value || 1),
+        limit: 5,
+        preferredBoard1Eta: preferredBoard1Eta(),
+      }),
+    });
+    if (token !== state.planToken) return;
+    state.plan = plan;
+    state.match = null;
+    renderBoard(plan);
+    if (!plan.candidates.length) {
+      state.selected = null;
+      renderResults();
+      refreshStatus(plan.summaryTc);
+      return;
+    }
+    const firstGood = plan.candidates.findIndex((candidate) => candidate.hasMatch);
+    await applyCandidate(firstGood >= 0 ? firstGood : 0, token);
+  } catch (err) {
+    if (token !== state.planToken) return;
+    state.plan = null;
+    $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+    refreshStatus();
+  }
+}
+
+function renderBoard(plan) {
+  const select = $("board1Eta");
+  const current = select.value;
+  const departures = plan.board1Departures || [];
+  fillingControls = true;
+  select.innerHTML = `<option value="">自動下一班</option>${departures
+    .map((item) => `<option value="${escapeHtml(item.eta)}">${escapeHtml(item.labelTc)}</option>`)
+    .join("")}`;
+  if (current && [...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+  fillingControls = false;
+}
+
+async function fillStops(leg, preferredId) {
+  const route = state.leg[leg];
+  const select = $(`stop${leg}`);
+  if (!route) {
+    select.innerHTML = `<option value="">用建議站</option>`;
+    select.disabled = true;
+    return;
+  }
+  const params = new URLSearchParams({
+    co: route.co,
+    route: route.route,
+    bound: route.bound,
+    serviceType: route.serviceType,
+  });
+  const { stops } = await api(`/api/stops?${params}`);
+  state.stops[leg] = stops;
+  fillingControls = true;
+  select.innerHTML = stops
+    .map((stop) => `<option value="${escapeHtml(stop.stopId)}">${stop.seq}. ${escapeHtml(stop.nameTc)}</option>`)
+    .join("");
+  select.disabled = !stops.length;
+  if (preferredId && stops.some((stop) => stop.stopId === preferredId)) select.value = preferredId;
+  fillingControls = false;
+}
+
+async function runMatch() {
+  const route1 = state.leg[1];
+  const route2 = state.leg[2];
   const stop1 = $("stop1").value;
   const stop2 = $("stop2").value;
   if (!route1 || !route2 || !stop1 || !stop2) return null;
-
   const walkRaw = $("walkMinutes").value;
   const bufferRaw = $("bufferMinutes").value;
   return api("/api/match", {
     method: "POST",
     body: JSON.stringify({
-      leg1: { ...route1, stopId: stop1 },
-      leg2: { ...route2, stopId: stop2 },
+      leg1: {
+        co: route1.co,
+        route: route1.route,
+        bound: route1.bound,
+        serviceType: route1.serviceType,
+        stopId: stop1,
+      },
+      leg2: {
+        co: route2.co,
+        route: route2.route,
+        bound: route2.bound,
+        serviceType: route2.serviceType,
+        stopId: stop2,
+      },
       walkMinutes: walkRaw === "" ? null : Number(walkRaw),
       bufferMinutes: bufferRaw === "" ? 1 : Number(bufferRaw),
     }),
   });
 }
 
-async function applyCandidate(index) {
-  const plan = state.plan;
-  if (!plan?.candidates?.[index]) return;
-  const c = plan.candidates[index];
-  state.selectedCandidateIndex = index;
-
-  await Promise.all([loadStops(1, c.alight1.stopId), loadStops(2, c.board2.stopId)]);
-  $("walkMinutes").value = String(c.walkMinutes);
-
+async function applyCandidate(index, token = state.planToken) {
+  const candidate = state.plan?.candidates?.[index];
+  if (!candidate) return;
+  state.selected = index;
+  await Promise.all([
+    fillStops(1, candidate.alight1.stopId),
+    fillStops(2, candidate.board2.stopId),
+  ]);
+  if (token !== state.planToken) return;
+  $("walkMinutes").value = String(candidate.walkMinutes);
   try {
-    state.match = await runMatchQuiet();
+    state.match = await runMatch();
   } catch (err) {
     state.match = null;
-    showOutputError(err.message);
+    $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+    return;
   }
-  renderOutput();
+  if (token !== state.planToken) return;
+  renderResults();
+  refreshStatus();
 }
 
-function renderOutput() {
+function matchBadge() {
+  const pair = state.match?.pairs?.find((item) => item.status !== "miss") || state.match?.pairs?.[0];
+  if (!pair) return { label: "計緊", cls: "" };
+  if (pair.status === "miss") return { label: pair.statusTc || "接唔到", cls: "miss" };
+  if (pair.status === "tight") return { label: pair.statusTc || "好逼", cls: "tight" };
+  return { label: pair.statusTc || "可接", cls: "" };
+}
+
+function renderResults() {
   const plan = state.plan;
-  const box = $("output");
+  const box = $("results");
   if (!plan) {
     box.innerHTML = "";
     return;
   }
-  if (!plan.candidates.length) {
-    box.innerHTML = `<div class="error">${plan.summaryTc}</div>`;
-    return;
-  }
-
-  const modeLabel =
-    plan.mode === "fastest" ? "最早上車" : plan.mode === "manual" ? "人手揀" : "最少步行";
-
-  const selected = state.selectedCandidateIndex;
-  const selectedCard =
-    selected != null && plan.candidates[selected]
-      ? `
-      <div class="timeline">
-        <strong>已選轉乘</strong>
-        <div>① ${fmtTime(plan.candidates[selected].board1Eta)} 上第一程（${plan.board1.nameTc}）</div>
-        <div>↓ ${plan.candidates[selected].alight1.nameTc}</div>
-        <div>↓ 步行約 ${plan.candidates[selected].walkMeters}m</div>
-        <div>② ${fmtTime(plan.candidates[selected].leg2Eta)} 上第二程（${plan.candidates[selected].board2.nameTc}）</div>
-      </div>
-      ${renderMatchInline(state.match)}
-    `
-      : `<p class="hint">撳下面其中一個建議，就會顯示時間。</p>`;
-
-  box.innerHTML = `
-    <div class="summary">
-      <span class="pill match">${modeLabel}</span>
-      <p>${plan.summaryTc}</p>
-    </div>
-    ${selectedCard}
-    <div class="plan-result">
-      ${plan.candidates
-        .map((c, idx) => {
-          const isSelected = selected === idx;
-          return `
-          <article class="candidate ${isSelected ? "selected" : ""}" role="button" tabindex="0" data-pick="${idx}">
-            <div class="candidate-top">
-              <strong>${isSelected ? "已選 · " : ""}#${idx + 1}</strong>
-              <span>${c.hasMatch ? "可接" : "未接"}</span>
-            </div>
-            <p class="meta-line">${c.scoreTc}</p>
-            <p class="meta-line">落：${c.alight1.nameTc}</p>
-            <p class="meta-line">上：${c.board2.nameTc}</p>
-          </article>
-        `;
-        })
-        .join("")}
+  const modeButtons = `
+    <div class="filters" role="radiogroup" aria-label="轉乘排序">
+      <button type="button" data-mode="fastest" class="${state.mode === "fastest" ? "is-on" : ""}">最早上車</button>
+      <button type="button" data-mode="shortest_walk" class="${state.mode === "shortest_walk" ? "is-on" : ""}">最少步行</button>
     </div>
   `;
-
-  box.querySelectorAll("[data-pick]").forEach((el) => {
-    const pick = async () => {
-      el.style.opacity = "0.7";
-      try {
-        await applyCandidate(Number(el.dataset.pick));
-        $("output").scrollIntoView({ behavior: "smooth", block: "start" });
-      } catch (err) {
-        showOutputError(err.message);
-      }
-    };
-    el.addEventListener("click", pick);
-    el.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        pick();
-      }
-    });
-  });
-}
-
-async function loadNearbyList() {
-  if (!state.origin) return;
-  const list = $("nearbyList");
-  $("nearbyBlock").hidden = false;
-  list.innerHTML = `<p class="hint">搵緊附近車站…</p>`;
-  try {
-    const params = new URLSearchParams({
-      lat: String(state.origin.lat),
-      long: String(state.origin.long),
-      limit: "10",
-      maxMeters: "900",
-    });
-    const data = await api(`/api/nearby?${params}`);
-    renderNearby(data);
-  } catch (err) {
-    list.innerHTML = `<div class="error">${err.message}</div>`;
-  }
-}
-
-function renderNearby(data) {
-  const list = $("nearbyList");
-  if (!data.stops?.length) {
-    list.innerHTML = `<p class="hint">附近暫時搵唔到站。</p>`;
+  if (!plan.candidates.length) {
+    box.innerHTML = `${modeButtons}<div class="error">${escapeHtml(plan.summaryTc)}</div>`;
+    wireModes();
     return;
   }
-  $("nearbyHint").textContent = "點開車站，填入落車／上車站。";
-  list.innerHTML = data.stops
-    .map(
-      (s) => `
-      <details class="nearby-stop" data-co="${s.co}" data-stop="${s.stopId}">
-        <summary>
-          <span>${s.nameTc}</span>
-          <span class="dist">${s.meters}m</span>
-        </summary>
-        <div class="service-list" data-services>載入路線中…</div>
-      </details>
-    `,
-    )
+
+  const selected = state.selected ?? 0;
+  const chosen = plan.candidates[selected];
+  const badge = chosen.hasMatch ? matchBadge() : { label: "未接", cls: "miss" };
+  const minutes = chosen.board2InMinutes;
+  const pair = state.match?.pairs?.find((item) => item.status !== "miss") || state.match?.pairs?.[0];
+  const detail = pair
+    ? `${fmtTime(pair.leg1Eta)} 落車 · ${fmtTime(pair.readyAt)} 行到 · ${pair.leg2Eta ? fmtTime(pair.leg2Eta) : "—"} 上第二程`
+    : chosen.scoreTc;
+
+  const alts = plan.candidates
+    .map((candidate, index) => {
+      if (index === selected) return "";
+      const when = candidate.board2InMinutes == null ? "未有時間" : `${candidate.board2InMinutes} 分鐘後`;
+      return `
+        <button type="button" class="alt" data-pick="${index}">
+          <strong>${when} · ${candidate.hasMatch ? "可接" : "未接"}</strong>
+          <span>落 ${escapeHtml(candidate.alight1.nameTc)} → 步行 ${candidate.walkMeters}m → 上 ${escapeHtml(candidate.board2.nameTc)}</span>
+        </button>
+      `;
+    })
     .join("");
 
-  list.querySelectorAll("details.nearby-stop").forEach((el) => {
-    el.addEventListener("toggle", () => {
-      if (el.open) loadStopServices(el);
-    });
-  });
-}
-
-async function loadStopServices(detailsEl) {
-  const box = detailsEl.querySelector("[data-services]");
-  if (!box || box.dataset.loaded === "1") return;
-  const co = detailsEl.dataset.co;
-  const stopId = detailsEl.dataset.stop;
-  box.textContent = "載入路線中…";
-  try {
-    const { services } = await api(
-      `/api/stop-services?co=${encodeURIComponent(co)}&stopId=${encodeURIComponent(stopId)}`,
-    );
-    box.dataset.loaded = "1";
-    if (!services.length) {
-      box.innerHTML = `<p class="hint">呢站暫時未有路線。</p>`;
-      return;
-    }
-    box.innerHTML = services
-      .map((svc) => {
-        const payload = encodeURIComponent(
-          JSON.stringify({
-            co,
-            stopId,
-            route: svc.route,
-            bound: svc.bound,
-            serviceType: svc.serviceType,
-            destTc: svc.destTc,
-          }),
-        );
-        return `
-          <div class="service-row">
-            <p><strong>${svc.route}</strong> → ${svc.destTc}</p>
-            <div class="service-actions">
-              <button type="button" class="chip-btn" data-apply="1" data-payload="${payload}">第一程落車</button>
-              <button type="button" class="chip-btn" data-apply="2" data-payload="${payload}">第二程上車</button>
-            </div>
+  box.innerHTML = `
+    ${modeButtons}
+    <article class="card">
+      <div class="card-top">
+        <div class="mins">${minutes == null ? "—" : minutes}<span>${minutes == null ? "未有上車時間" : "分鐘後上第二程"}</span></div>
+        <span class="pill ${badge.cls}">${escapeHtml(badge.label)}</span>
+      </div>
+      <ol class="itinerary">
+        <li class="leg">
+          <span class="dot"></span>
+          <div>
+            <b>${escapeHtml(state.leg[1].route)}</b> ${fmtTime(chosen.board1Eta)} 上 ${escapeHtml(plan.board1.nameTc)}
+            <small>${fmtTime(chosen.leg1Eta)} 落 ${escapeHtml(chosen.alight1.nameTc)}</small>
           </div>
-        `;
-      })
-      .join("");
-    box.querySelectorAll("[data-apply]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const leg = Number(btn.dataset.apply);
-        const payload = JSON.parse(decodeURIComponent(btn.dataset.payload));
-        $(`co${leg}`).value = payload.co;
-        $(`routeQuery${leg}`).value = payload.route;
-        await loadRoutes(leg);
-        const select = $(`route${leg}`);
-        for (const opt of select.options) {
-          if (!opt.value) continue;
-          const v = JSON.parse(opt.value);
-          if (v.route === payload.route && v.bound === payload.bound) {
-            select.value = opt.value;
-            break;
-          }
-        }
-        await loadStops(leg, payload.stopId);
-        refreshSticky();
+        </li>
+        <li class="walk">
+          <span class="dot"></span>
+          <div>步行 ${chosen.walkMeters}m · 約 ${chosen.walkMinutes} 分鐘</div>
+        </li>
+        <li class="leg">
+          <span class="dot"></span>
+          <div>
+            <b>${escapeHtml(state.leg[2].route)}</b> ${fmtTime(chosen.leg2Eta)} 上 ${escapeHtml(chosen.board2.nameTc)}
+          </div>
+        </li>
+      </ol>
+      <p class="match-line">${escapeHtml(detail)}</p>
+    </article>
+    <div class="alts">${alts}</div>
+  `;
+  wireModes();
+  box.querySelectorAll("[data-pick]").forEach((button) => {
+    button.addEventListener("click", () => {
+      applyCandidate(Number(button.dataset.pick)).catch((err) => {
+        box.innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
       });
     });
-  } catch (err) {
-    box.innerHTML = `<div class="error">${err.message}</div>`;
-  }
+  });
 }
 
-async function runPlan() {
-  if (!canPlan()) {
-    showOutputError("請先完成定位同兩程路線。");
-    return;
-  }
+function wireModes() {
+  $("results").querySelectorAll("[data-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.mode;
+      if (!mode || mode === state.mode) return;
+      state.mode = mode;
+      schedulePlan();
+    });
+  });
+}
 
-  const btn = $("planBtn");
-  btn.disabled = true;
-  btn.textContent = "搵緊…";
-  $("stickyHint").textContent = "分析緊轉乘站同 ETA";
-  $("output").innerHTML = `<p class="hint">分析緊兩程車站同即時 ETA…</p>`;
-  state.selectedCandidateIndex = null;
-  state.match = null;
+function wireSearch(leg) {
+  const input = $(`q${leg}`);
+  input.addEventListener("input", () => {
+    if (state.leg[leg]) {
+      state.leg[leg] = null;
+      renderChip(leg);
+    }
+    searchDebounced[leg]();
+  });
+  input.addEventListener("focus", () => {
+    if (input.value.trim()) search(leg);
+  });
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      if (state.activeLeg === leg && document.activeElement !== input) hideSuggest();
+    }, 150);
+  });
+  input.addEventListener("keydown", (event) => {
+    const open = ! $("suggest").hidden && state.activeLeg === leg && state.suggest.length > 0;
+    if (event.key === "ArrowDown" && open) {
+      event.preventDefault();
+      state.highlight = Math.min(state.suggest.length - 1, state.highlight + 1);
+      paintHighlight();
+    } else if (event.key === "ArrowUp" && open) {
+      event.preventDefault();
+      state.highlight = Math.max(0, state.highlight - 1);
+      paintHighlight();
+    } else if (event.key === "Enter" && open) {
+      event.preventDefault();
+      pick(leg, state.highlight);
+    } else if (event.key === "Escape") {
+      hideSuggest();
+    }
+  });
+  $(`clear${leg}`).addEventListener("click", () => clearLeg(leg));
+}
 
-  const mode = selectedMode();
+async function locate() {
+  if (state.locating) return;
+  state.locating = true;
+  $("originLabel").textContent = "定位中…";
+  $("originSub").textContent = "等緊你個位置";
+  $("originBtn").classList.remove("is-ok");
   try {
-    const plan = await api("/api/plan-transfer", {
-      method: "POST",
-      body: JSON.stringify({
-        origin: state.origin,
-        leg1: parseRouteValue($("route1").value),
-        leg2: parseRouteValue($("route2").value),
-        mode,
-        maxTransferMeters: Number($("maxTransferMeters").value || 450),
-        bufferMinutes: Number($("bufferMinutes").value || 1),
-        limit: mode === "manual" ? 12 : 8,
-        preferredBoard1Eta: preferredBoard1Eta(),
-      }),
-    });
-    state.plan = plan;
-    if (plan.board1Departures?.length) {
-      renderBoard1Departures({
-        board1: plan.board1,
-        board1Departures: plan.board1Departures,
-        noteTc: `會喺「${plan.board1.nameTc}」上第一程（距出發地約 ${plan.board1.metersFromOrigin}m）。而家用${plan.board1EtaSource === "manual" ? "人手" : "自動"}班次 ${fmtTime(plan.board1.boardEta)}。`,
-      });
-    }
-    renderOutput();
-
-    if (mode === "manual") {
-      $("advanced").open = true;
-      await loadNearbyList();
-    } else if (plan.candidates.length) {
-      const firstGood = plan.candidates.findIndex((c) => c.hasMatch);
-      await applyCandidate(firstGood >= 0 ? firstGood : 0);
-    }
-
-    $("output").scrollIntoView({ behavior: "smooth", block: "start" });
+    const pos = await getCurrentPosition();
+    state.origin = { lat: pos.coords.latitude, long: pos.coords.longitude };
+    $("originLabel").textContent = "我的位置";
+    $("originSub").textContent = "已定位 · 撳一下更新";
+    $("originBtn").classList.add("is-ok");
+    if (state.leg[1] && state.leg[2]) schedulePlan();
+    else refreshStatus();
   } catch (err) {
-    showOutputError(err.message);
+    state.origin = null;
+    $("originLabel").textContent = "用我的位置";
+    $("originSub").textContent = geoErrorMessage(err);
+    refreshStatus();
   } finally {
-    refreshSticky();
-    btn.textContent = "再搵一次";
+    state.locating = false;
   }
 }
 
-function wireLeg(leg) {
-  const loadRoutesDebounced = debounce(() => loadRoutes(leg), 350);
-  $(`co${leg}`).addEventListener("change", () => {
-    $(`routeQuery${leg}`).value = "";
-    loadRoutes(leg);
-  });
-  $(`routeQuery${leg}`).addEventListener("input", loadRoutesDebounced);
-  $(`route${leg}`).addEventListener("change", async () => {
-    await loadStops(leg);
-    if (leg === 1) await refreshBoard1Departures();
-    refreshSticky();
-  });
-  $(`stop${leg}Visible`).addEventListener("change", async () => {
-    $(`stop${leg}`).value = $(`stop${leg}Visible`).value;
-    if (state.plan && state.selectedCandidateIndex != null) {
-      try {
-        state.match = await runMatchQuiet();
-        renderOutput();
-      } catch (err) {
-        showOutputError(err.message);
-      }
-    }
-  });
+async function onStopChange() {
+  if (fillingControls || state.selected == null) return;
+  try {
+    state.match = await runMatch();
+    renderResults();
+  } catch (err) {
+    $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+  }
 }
 
-document.querySelectorAll('input[name="planMode"]').forEach((input) => {
-  input.addEventListener("change", () => {
-    $("modeHint").textContent = MODE_HINTS[selectedMode()];
-    $("nearbyBlock").hidden = selectedMode() !== "manual";
-    if (selectedMode() === "manual" && state.origin) {
-      $("advanced").open = true;
-      loadNearbyList();
-    }
-  });
+wireSearch(1);
+wireSearch(2);
+$("swapBtn").addEventListener("click", swapLegs);
+$("originBtn").addEventListener("click", locate);
+$("board1Eta").addEventListener("change", () => {
+  if (!fillingControls) schedulePlan();
 });
+$("bufferMinutes").addEventListener("change", debounce(() => schedulePlan(), 250));
+$("maxTransferMeters").addEventListener("change", debounce(() => schedulePlan(), 250));
+$("walkMinutes").addEventListener("change", debounce(() => onStopChange(), 250));
+$("stop1").addEventListener("change", onStopChange);
+$("stop2").addEventListener("change", onStopChange);
 
-document.querySelectorAll('input[name="board1Mode"]').forEach((input) => {
-  input.addEventListener("change", () => {
-    const manual = board1Mode() === "manual";
-    $("board1SelectWrap").hidden = !manual;
-    if (manual && !state.board1Departures.length) refreshBoard1Departures();
-  });
-});
-
-$("refreshBoard1Btn").addEventListener("click", refreshBoard1Departures);
-$("bufferMinutes").addEventListener(
-  "change",
-  debounce(() => {
-    refreshBoard1Departures();
-  }, 300),
-);
-
-wireLeg(1);
-wireLeg(2);
-$("locateBtn").addEventListener("click", locateOrigin);
-$("planBtn").addEventListener("click", runPlan);
-
-$("modeHint").textContent = MODE_HINTS.shortest_walk;
-refreshSticky();
+locate();
+refreshStatus();

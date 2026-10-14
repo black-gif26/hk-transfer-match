@@ -106,69 +106,131 @@ function boundToCtbDir(bound: Bound): "outbound" | "inbound" {
   return bound === "O" ? "outbound" : "inbound";
 }
 
+const ROUTE_TTL_MS = 60 * 60 * 1000;
+
+type KmbRouteRow = {
+  route: string;
+  bound: Bound;
+  service_type: string;
+  orig_tc: string;
+  dest_tc: string;
+  orig_en: string;
+  dest_en: string;
+};
+
+type CtbRouteRow = {
+  route: string;
+  orig_tc: string;
+  dest_tc: string;
+  orig_en: string;
+  dest_en: string;
+};
+
+let kmbRoutesCache: { at: number; rows: KmbRouteRow[] } | null = null;
+let ctbRoutesCache: { at: number; rows: CtbRouteRow[] } | null = null;
+
+async function loadKmbRouteRows(): Promise<KmbRouteRow[]> {
+  if (kmbRoutesCache && Date.now() - kmbRoutesCache.at < ROUTE_TTL_MS) return kmbRoutesCache.rows;
+  const json = await getJson<{ data: KmbRouteRow[] }>(`${KMB}/route/`);
+  kmbRoutesCache = { at: Date.now(), rows: json.data };
+  return json.data;
+}
+
+async function loadCtbRouteRows(): Promise<CtbRouteRow[]> {
+  if (ctbRoutesCache && Date.now() - ctbRoutesCache.at < ROUTE_TTL_MS) return ctbRoutesCache.rows;
+  const json = await getJson<{ data: CtbRouteRow[] }>(`${CTB}/route/CTB`);
+  ctbRoutesCache = { at: Date.now(), rows: json.data };
+  return json.data;
+}
+
+function kmbOption(row: KmbRouteRow): RouteOption {
+  return {
+    co: "KMB",
+    route: row.route,
+    bound: row.bound,
+    serviceType: String(row.service_type),
+    origTc: row.orig_tc,
+    destTc: row.dest_tc,
+    origEn: row.orig_en,
+    destEn: row.dest_en,
+    labelTc: `${row.route}｜${row.orig_tc} → ${row.dest_tc}${row.service_type !== "1" ? `（特${row.service_type}）` : ""}`,
+  };
+}
+
+function ctbOptions(row: CtbRouteRow): RouteOption[] {
+  return (["O", "I"] as Bound[]).map((bound) => {
+    const origTc = bound === "O" ? row.orig_tc : row.dest_tc;
+    const destTc = bound === "O" ? row.dest_tc : row.orig_tc;
+    const origEn = bound === "O" ? row.orig_en : row.dest_en;
+    const destEn = bound === "O" ? row.dest_en : row.orig_en;
+    return {
+      co: "CTB" as const,
+      route: row.route,
+      bound,
+      serviceType: "1",
+      origTc,
+      destTc,
+      origEn,
+      destEn,
+      labelTc: `${row.route}｜${origTc} → ${destTc}`,
+    };
+  });
+}
+
 export async function listRoutes(co: Company, query = ""): Promise<RouteOption[]> {
   const q = query.trim().toUpperCase();
 
   if (co === "KMB") {
-    type Row = {
-      route: string;
-      bound: Bound;
-      service_type: string;
-      orig_tc: string;
-      dest_tc: string;
-      orig_en: string;
-      dest_en: string;
-    };
-    const json = await getJson<{ data: Row[] }>(`${KMB}/route/`);
-    return json.data
-      .filter((r) => !q || r.route.toUpperCase().includes(q) || r.route.toUpperCase() === q)
-      .map((r) => ({
-        co: "KMB" as const,
-        route: r.route,
-        bound: r.bound,
-        serviceType: String(r.service_type),
-        origTc: r.orig_tc,
-        destTc: r.dest_tc,
-        origEn: r.orig_en,
-        destEn: r.dest_en,
-        labelTc: `${r.route}｜${r.orig_tc} → ${r.dest_tc}${r.service_type !== "1" ? `（特${r.service_type}）` : ""}`,
-      }))
+    const rows = await loadKmbRouteRows();
+    return rows
+      .filter((r) => !q || r.route.toUpperCase().includes(q))
+      .map(kmbOption)
       .sort((a, b) => a.route.localeCompare(b.route, "en", { numeric: true }));
   }
 
-  type CtbRoute = {
-    route: string;
-    orig_tc: string;
-    dest_tc: string;
-    orig_en: string;
-    dest_en: string;
-  };
-  const json = await getJson<{ data: CtbRoute[] }>(`${CTB}/route/CTB`);
-  const filtered = json.data.filter(
-    (r) => !q || r.route.toUpperCase().includes(q) || r.route.toUpperCase() === q,
-  );
-
+  const rows = await loadCtbRouteRows();
   const options: RouteOption[] = [];
-  for (const r of filtered) {
-    for (const bound of ["O", "I"] as Bound[]) {
-      const origTc = bound === "O" ? r.orig_tc : r.dest_tc;
-      const destTc = bound === "O" ? r.dest_tc : r.orig_tc;
-      const origEn = bound === "O" ? r.orig_en : r.dest_en;
-      const destEn = bound === "O" ? r.dest_en : r.orig_en;
-      options.push({
-        co: "CTB",
-        route: r.route,
-        bound,
-        serviceType: "1",
-        origTc,
-        destTc,
-        origEn,
-        destEn,
-        labelTc: `${r.route}｜${origTc} → ${destTc}`,
-      });
-    }
+  for (const row of rows) {
+    if (q && !row.route.toUpperCase().includes(q)) continue;
+    options.push(...ctbOptions(row));
   }
   return options.sort((a, b) => a.route.localeCompare(b.route, "en", { numeric: true }));
+}
+
+function routeMatchRank(route: string, query: string): number {
+  const value = route.toUpperCase();
+  if (value === query) return 0;
+  if (value.startsWith(query)) return 1;
+  return 2;
+}
+
+/** Both companies, exact route first, capped for a search box. */
+export async function searchRoutes(query: string, limit = 8): Promise<RouteOption[]> {
+  const q = query.trim().toUpperCase();
+  if (!q) return [];
+  const cap = Math.min(Math.max(Math.round(limit) || 8, 1), 12);
+  const [kmbRows, ctbRows] = await Promise.all([loadKmbRouteRows(), loadCtbRouteRows()]);
+  const options: RouteOption[] = [];
+  for (const row of kmbRows) {
+    if (routeMatchRank(row.route, q) > 1) continue;
+    options.push(kmbOption(row));
+  }
+  for (const row of ctbRows) {
+    if (routeMatchRank(row.route, q) > 1) continue;
+    options.push(...ctbOptions(row));
+  }
+  options.sort((a, b) => {
+    const rank = routeMatchRank(a.route, q) - routeMatchRank(b.route, q);
+    if (rank) return rank;
+    const length = a.route.length - b.route.length;
+    if (length) return length;
+    const numeric = a.route.localeCompare(b.route, "en", { numeric: true });
+    if (numeric) return numeric;
+    const service = Number(a.serviceType) - Number(b.serviceType);
+    if (service) return service;
+    return a.destTc.localeCompare(b.destTc, "zh-Hant");
+  });
+  return options.slice(0, cap);
 }
 
 export async function listRouteStops(
