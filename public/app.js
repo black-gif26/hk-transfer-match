@@ -137,8 +137,13 @@ function paintHighlight() {
   });
 }
 
+function placeSuggest(leg) {
+  $(`field${leg}`).parentElement.appendChild($("suggest"));
+}
+
 function renderSuggest(routes, leg) {
   const list = $("suggest");
+  placeSuggest(leg);
   state.activeLeg = leg;
   state.suggest = routes;
   state.highlight = 0;
@@ -172,6 +177,7 @@ async function search(leg) {
     if (state.activeLeg === leg) hideSuggest();
     return;
   }
+  placeSuggest(leg);
   $("suggest").hidden = false;
   $("suggest").innerHTML = `<li class="empty">搜尋中…</li>`;
   state.activeLeg = leg;
@@ -255,14 +261,22 @@ function refreshStatus(message) {
       : "輸入兩程路線，結果會自動出現。唔使定位都得。";
     return;
   }
+  if (!step2StopChosen()) {
+    $("status").textContent = "揀第二程落車站，先會出可轉車站。";
+    return;
+  }
   if (state.plan?.candidates?.length) {
     const located = state.origin ? "" : "未用定位。";
     $("status").textContent = `${located}可轉車站有 ${state.plan.candidates.length} 個，撳一下就用。`;
   }
 }
 
+function step2StopChosen() {
+  return !!(state.leg[2] && state.stopTouched[2] && $("stop2").value);
+}
+
 function readyToPlan() {
-  return !!(state.leg[1] && state.leg[2]);
+  return !!(state.leg[1] && state.leg[2] && step2StopChosen());
 }
 
 function schedulePlan() {
@@ -472,7 +486,7 @@ function renderTransferOptions() {
   const list = $("transferList");
   const row = $("transferRow");
   const candidates = state.plan?.candidates || [];
-  if (!candidates.length) {
+  if (!candidates.length || !step2StopChosen()) {
     hideTransfer();
     return;
   }
@@ -586,14 +600,12 @@ function wireSearch(leg) {
   });
   input.addEventListener("focus", () => {
     if (input.value.trim()) search(leg);
-    setTimeout(() => {
-      input.closest(".sheet")?.scrollIntoView({ block: "start", behavior: "smooth" });
-    }, 280);
   });
   input.addEventListener("blur", () => {
     setTimeout(() => {
+      if (suggestGesture) return;
       if (state.activeLeg === leg && document.activeElement !== input) hideSuggest();
-    }, 150);
+    }, 400);
   });
   input.addEventListener("keydown", (event) => {
     const open = ! $("suggest").hidden && state.activeLeg === leg && state.suggest.length > 0;
@@ -676,11 +688,55 @@ async function bootLocation() {
 
 wireSearch(1);
 wireSearch(2);
+
+let suggestGesture = null;
 $("suggest").addEventListener("pointerdown", (event) => {
   const button = event.target.closest("button[data-i]");
+  suggestGesture = button
+    ? { x: event.clientX, y: event.clientY, id: button.dataset.i, moved: false }
+    : null;
+});
+$("suggest").addEventListener("pointermove", (event) => {
+  if (!suggestGesture) return;
+  if (Math.hypot(event.clientX - suggestGesture.x, event.clientY - suggestGesture.y) > 12) {
+    suggestGesture.moved = true;
+  }
+});
+$("suggest").addEventListener("pointercancel", () => {
+  suggestGesture = null;
+});
+$("suggest").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-i]");
+  const gesture = suggestGesture;
+  suggestGesture = null;
   if (!button || state.activeLeg == null) return;
-  event.preventDefault();
+  if (gesture?.moved) return;
   pick(state.activeLeg, Number(button.dataset.i));
+});
+document.addEventListener("pointerdown", (event) => {
+  const list = $("suggest");
+  if (list.hidden) return;
+  if (list.contains(event.target)) return;
+  const leg = state.activeLeg;
+  if (leg && event.target === $(`q${leg}`)) return;
+  hideSuggest();
+});
+
+let transferGesture = null;
+$("transferList").addEventListener("pointerdown", (event) => {
+  const button = event.target.closest("button[data-transfer]");
+  transferGesture = button
+    ? { x: event.clientX, y: event.clientY, id: button.dataset.transfer, moved: false }
+    : null;
+});
+$("transferList").addEventListener("pointermove", (event) => {
+  if (!transferGesture) return;
+  if (Math.hypot(event.clientX - transferGesture.x, event.clientY - transferGesture.y) > 12) {
+    transferGesture.moved = true;
+  }
+});
+$("transferList").addEventListener("pointercancel", () => {
+  transferGesture = null;
 });
 $("swapBtn").addEventListener("click", swapLegs);
 $("originBtn").addEventListener("click", locate);
@@ -700,7 +756,11 @@ $("stop2").addEventListener("change", () => {
 });
 $("transferList").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-transfer]");
+  const gesture = transferGesture;
+  transferGesture = null;
   if (!button || !state.plan?.candidates?.length) return;
+  if (!step2StopChosen()) return;
+  if (gesture?.moved) return;
   state.transferTouched = true;
   applyCandidate(Number(button.dataset.transfer)).catch((err) => {
     $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
