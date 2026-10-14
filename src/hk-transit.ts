@@ -66,11 +66,10 @@ export class SubrequestBudget {
     return this.limit - this.left;
   }
 
-  charge(n = 1) {
-    if (this.left < n) {
-      throw new Error("今次搜尋要查太多班次，請改行少啲站或者轉最少步行再試。");
-    }
+  tryCharge(n = 1) {
+    if (this.left < n) return false;
     this.left -= n;
+    return true;
   }
 }
 
@@ -89,8 +88,8 @@ function ctbFromSnapshot(stopId: string): StopPlace | null {
   };
 }
 
-async function getJson<T>(url: string, budget?: SubrequestBudget): Promise<T> {
-  budget?.charge();
+async function getJson<T>(url: string, budget?: SubrequestBudget): Promise<T | null> {
+  if (budget && !budget.tryCharge()) return null;
   const res = await fetch(url, {
     headers: { Accept: "application/json" },
   });
@@ -140,6 +139,7 @@ async function getKmbStopDirectory(budget?: SubrequestBudget): Promise<StopDirec
   const loading = (async () => {
     type Row = { stop: string; name_tc: string; name_en: string; lat: string; long: string };
     const json = await getJson<{ data: Row[] }>(`${KMB}/stop`, budget);
+    if (!json) throw new Error("暫時攞唔到九巴站表");
     const map: StopDirectory = new Map();
     for (const row of json.data) {
       map.set(row.stop, {
@@ -169,6 +169,7 @@ async function getCtbStop(stopId: string, budget?: SubrequestBudget): Promise<St
   const stop = await getJson<{
     data: { stop: string; name_tc: string; name_en: string; lat: string; long: string };
   }>(`${CTB}/stop/${encodeURIComponent(stopId)}`, budget);
+  if (!stop) return null;
   const value = {
     nameTc: stop.data.name_tc,
     nameEn: stop.data.name_en,
@@ -213,6 +214,7 @@ let ctbRoutesCache: { at: number; rows: CtbRouteRow[] } | null = null;
 async function loadKmbRouteRows(): Promise<KmbRouteRow[]> {
   if (kmbRoutesCache && Date.now() - kmbRoutesCache.at < ROUTE_TTL_MS) return kmbRoutesCache.rows;
   const json = await getJson<{ data: KmbRouteRow[] }>(`${KMB}/route/`);
+  if (!json) throw new Error("暫時攞唔到九巴路線");
   kmbRoutesCache = { at: Date.now(), rows: json.data };
   return json.data;
 }
@@ -220,6 +222,7 @@ async function loadKmbRouteRows(): Promise<KmbRouteRow[]> {
 async function loadCtbRouteRows(): Promise<CtbRouteRow[]> {
   if (ctbRoutesCache && Date.now() - ctbRoutesCache.at < ROUTE_TTL_MS) return ctbRoutesCache.rows;
   const json = await getJson<{ data: CtbRouteRow[] }>(`${CTB}/route/CTB`);
+  if (!json) throw new Error("暫時攞唔到城巴路線");
   ctbRoutesCache = { at: Date.now(), rows: json.data };
   return json.data;
 }
@@ -331,6 +334,7 @@ export async function listRouteStops(
   bound: Bound,
   serviceType = "1",
   budget?: SubrequestBudget,
+  maxLiveStops = 0,
 ): Promise<StopInfo[]> {
   if (co === "KMB") {
     type Row = { stop: string; seq: string };
@@ -341,6 +345,7 @@ export async function listRouteStops(
       ),
       getKmbStopDirectory(budget),
     ]);
+    if (!json) return [];
     return json.data
       .map((row) => {
         const stop = dir.get(row.stop);
@@ -361,6 +366,7 @@ export async function listRouteStops(
     `${CTB}/route-stop/CTB/${encodeURIComponent(route)}/${boundToCtbDir(bound)}`,
     budget,
   );
+  if (!json) return [];
   const rows = [...json.data].sort((a, b) => Number(a.seq) - Number(b.seq));
   const stops = new Array<StopInfo>(rows.length);
   const missing: number[] = [];
@@ -379,6 +385,12 @@ export async function listRouteStops(
     } else {
       missing.push(i);
     }
+  }
+  const liveCap = Math.max(0, maxLiveStops);
+  const skipped = missing.splice(liveCap);
+  for (const index of skipped) {
+    const row = rows[index];
+    stops[index] = unresolvedStop(row.stop, Number(row.seq));
   }
   // Workers allow 6 simultaneous connections. Snapshot hits do not fetch.
   await mapPool(missing, 6, async (index) => {
@@ -416,6 +428,7 @@ export async function listEtas(
       `${KMB}/eta/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}/${encodeURIComponent(serviceType)}`,
       budget,
     );
+    if (!json) return [];
     return json.data
       .filter((r) => !!r.eta)
       .map((r) => ({
@@ -437,6 +450,7 @@ export async function listEtas(
     `${CTB}/eta/CTB/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}`,
     budget,
   );
+  if (!json) return [];
   return json.data
     .filter((r) => !!r.eta)
     .map((r) => ({
@@ -541,6 +555,7 @@ export async function listStopServices(co: Company, stopId: string): Promise<Sto
     eta_seq: number;
   };
   const json = await getJson<{ data: Row[] }>(`${KMB}/stop-eta/${encodeURIComponent(stopId)}`);
+  if (!json) return [];
   const best = new Map<string, StopService>();
 
   for (const row of json.data) {

@@ -239,7 +239,7 @@ function refreshStatus(message) {
     return;
   }
   if (state.plan?.candidates?.length) {
-    $("status").textContent = `已搵到 ${state.plan.candidates.length} 個轉乘，最快嗰個已經展開。`;
+    $("status").textContent = `已列出最接近的 ${state.plan.candidates.length} 班車。`;
   }
 }
 
@@ -267,7 +267,7 @@ function preferredBoard1Eta() {
 async function runPlan() {
   if (!readyToPlan()) return;
   const token = ++state.planToken;
-  refreshStatus("計緊邊個站轉得最快…");
+  refreshStatus("搵緊最接近的 3 班車…");
   $("results").innerHTML = `<p class="loading">搵緊轉乘…</p>`;
   const legPayload = (leg) => ({
     co: leg.co,
@@ -285,7 +285,7 @@ async function runPlan() {
         mode: state.mode,
         maxTransferMeters: Number($("maxTransferMeters").value || 450),
         bufferMinutes: Number($("bufferMinutes").value || 1),
-        limit: 5,
+        limit: 3,
         preferredBoard1Eta: preferredBoard1Eta(),
       }),
     });
@@ -383,18 +383,20 @@ async function applyCandidate(index, token = state.planToken) {
   const candidate = state.plan?.candidates?.[index];
   if (!candidate) return;
   state.selected = index;
-  await Promise.all([
-    fillStops(1, candidate.alight1.stopId),
-    fillStops(2, candidate.board2.stopId),
-  ]);
+  try {
+    await Promise.all([
+      fillStops(1, candidate.alight1.stopId),
+      fillStops(2, candidate.board2.stopId),
+    ]);
+  } catch {
+    // The three closest buses can still be shown if the stop lists are busy.
+  }
   if (token !== state.planToken) return;
   $("walkMinutes").value = String(candidate.walkMinutes);
   try {
     state.match = await runMatch();
-  } catch (err) {
+  } catch {
     state.match = null;
-    $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
-    return;
   }
   if (token !== state.planToken) return;
   renderResults();

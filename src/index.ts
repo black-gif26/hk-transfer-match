@@ -66,7 +66,7 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.3.2" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.3.3" });
   }
 
   if (request.method === "GET" && url.pathname === "/api/nearby") {
@@ -120,7 +120,7 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
     const serviceType = url.searchParams.get("serviceType") ?? "1";
     if (!co || !route || !bound) return error("需要 co、route、bound");
     const budget = new SubrequestBudget();
-    const stops = await listRouteStops(co, route, bound, serviceType, budget);
+    const stops = await listRouteStops(co, route, bound, serviceType, budget, 8);
     console.log(JSON.stringify({ level: "info", event: "stops", subrequests: budget.used }));
     return json({ stops });
   }

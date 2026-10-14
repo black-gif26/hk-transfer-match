@@ -241,6 +241,29 @@ function buildPairs(
   return [...bestByAlight.values()].sort((x, y) => x.walkMeters - y.walkMeters);
 }
 
+const CLOSEST_BUSES = 3;
+
+function bareCandidate(
+  pair: { alight1: StopInfo; board2: StopInfo; walkMeters: number; walkMinutes: number },
+  board1Eta: string | null,
+): TransferCandidate {
+  return {
+    alight1: pair.alight1,
+    board2: pair.board2,
+    walkMeters: pair.walkMeters,
+    walkMinutes: pair.walkMinutes,
+    hasMatch: false,
+    waitMinutes: null,
+    gapMinutes: null,
+    board1Eta,
+    leg1Eta: null,
+    leg2Eta: null,
+    readyAt: null,
+    board2InMinutes: null,
+    scoreTc: `轉車步行 ${pair.walkMeters}m · 落 ${pair.alight1.nameTc} → 上 ${pair.board2.nameTc}`,
+  };
+}
+
 function isChronological(board1Eta: string | null, leg1Eta: string, leg2Eta: string): boolean {
   if (!board1Eta) return parseEtaMs(leg1Eta) < parseEtaMs(leg2Eta);
   return (
@@ -401,31 +424,18 @@ export async function planTransfer(params: {
       budget,
     });
 
-  // Each scored pair is two ETA fetches. Free/preview Workers stop at 50 subrequests.
-  const pairCap = Math.min(
-    params.mode === "fastest" ? 8 : limit,
-    Math.floor(budget.remaining / 2),
-  );
-  const shortlist = pairs.slice(0, Math.max(0, pairCap));
-  if (!shortlist.length) {
-    return {
-      mode: params.mode,
-      board1,
-      board1Departures,
-      board1EtaSource,
-      candidates: [],
-      summaryTc: `第一程最近上車站係「${board1.nameTc}」，今次未能再查第二程到站時間。請改最少步行或者稍後再試。`,
-    };
-  }
-
-  const scoredAll = await mapPool(shortlist, 3, scoreOne);
+  // Show the closest transfers only. Each one costs two ETA fetches.
+  const closest = pairs.slice(0, Math.min(CLOSEST_BUSES, limit, pairs.length));
+  const pairCap = Math.min(closest.length, Math.floor(budget.remaining / 2));
+  const shortlist = closest.slice(0, Math.max(0, pairCap));
+  const scoredAll = [
+    ...(shortlist.length ? await mapPool(shortlist, 3, scoreOne) : []),
+    ...closest.slice(pairCap).map((pair) => bareCandidate(pair, board1Eta)),
+  ];
 
   if (params.mode === "shortest_walk" || params.mode === "manual") {
     const scored = scoredAll;
-    const summaryTc =
-      params.mode === "manual"
-        ? `已列出 ${scored.length} 個可揀轉乘站（由近至遠）。${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。`
-        : `最少步行：最近轉乘約 ${scored[0].walkMeters}m。${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}，第二程上車 ${fmtHkHm(scored[0].leg2Eta)}。`;
+    const summaryTc = `最接近的 ${scored.length} 班車。最近轉乘約 ${scored[0].walkMeters}m，${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。`;
     return {
       mode: params.mode,
       board1,
@@ -449,13 +459,13 @@ export async function planTransfer(params: {
     return a.walkMeters - b.walkMeters;
   });
 
-  const top = scored.slice(0, limit);
+  const top = scored.slice(0, CLOSEST_BUSES);
   const best = top.find((c) => c.hasMatch) ?? top[0];
   let summaryTc: string;
   if (best?.hasMatch && board1Eta && best.leg1Eta && best.leg2Eta) {
-    summaryTc = `上車時間估算（${tripLabel}）：行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，${fmtHkHm(board1Eta)} 上第一程 → ${fmtHkHm(best.leg1Eta)} 落車轉「${best.alight1.nameTc} → ${best.board2.nameTc}」→ 約 ${fmtHkHm(best.leg2Eta)} 上第二程。`;
+    summaryTc = `最接近的 ${top.length} 班車。行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，${fmtHkHm(board1Eta)} 上第一程 → 約 ${fmtHkHm(best.leg2Eta)} 上第二程（轉車 ${best.walkMeters}m）。`;
   } else {
-    summaryTc = `${tripLabel}第一程約 ${fmtHkHm(board1Eta)} 喺「${board1.nameTc}」上車；附近轉乘站暫時未有「上車→落車→再上車」時間順序合理嘅 ETA（長途線常見）。可改最少步行、換班次或人手選擇。`;
+    summaryTc = `最接近的 ${top.length} 班車。${tripLabel}第一程約 ${fmtHkHm(board1Eta)} 喺「${board1.nameTc}」上車，最近轉乘約 ${best?.walkMeters ?? "—"}m。`;
   }
 
   return {
