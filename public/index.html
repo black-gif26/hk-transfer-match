@@ -2,9 +2,16 @@
 <html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>駁車時</title>
     <meta name="description" content="搜兩程巴士路線，即刻睇轉乘時間。" />
+    <meta name="theme-color" content="#083f3c" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="駁車時" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -26,7 +33,7 @@
             <div class="gutter" aria-hidden="true"><span class="pin me"></span></div>
             <button class="origin" id="originBtn" type="button">
               <span id="originLabel">用我的位置</span>
-              <small id="originSub">定位後先計到轉乘</small>
+              <small id="originSub">撳一下允許定位</small>
             </button>
           </div>
 
@@ -37,9 +44,11 @@
                 id="q1"
                 placeholder="第一程路線，例如 1A"
                 autocomplete="off"
+                autocorrect="off"
                 autocapitalize="characters"
                 spellcheck="false"
                 enterkeyhint="search"
+                inputmode="text"
                 aria-label="第一程路線"
                 aria-autocomplete="list"
                 aria-controls="suggest"
@@ -66,9 +75,11 @@
                 id="q2"
                 placeholder="第二程路線，例如 5"
                 autocomplete="off"
+                autocorrect="off"
                 autocapitalize="characters"
                 spellcheck="false"
                 enterkeyhint="search"
+                inputmode="text"
                 aria-label="第二程路線"
                 aria-autocomplete="list"
                 aria-controls="suggest"

@@ -63,23 +63,33 @@ async function api(path, options) {
   return data;
 }
 
-function getCurrentPosition() {
+function isIos() {
+  const ua = navigator.userAgent || "";
+  return /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function readPosition(highAccuracy) {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
-      reject(new Error("呢部機唔支援定位"));
+      reject(Object.assign(new Error("呢部機唔支援定位"), { code: 0 }));
       return;
     }
     navigator.geolocation.getCurrentPosition(resolve, reject, {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 30000,
+      enableHighAccuracy: highAccuracy,
+      timeout: highAccuracy ? 10000 : 8000,
+      maximumAge: highAccuracy ? 15000 : 120000,
     });
   });
 }
 
 function geoErrorMessage(err) {
   if (!err) return "定位失敗";
-  if (err.code === 1) return "未授權位置。撳一下再允許。";
+  if (!window.isSecureContext) return "用 https 開啟先可以定位。";
+  if (err.code === 1) {
+    return isIos()
+      ? "未允許位置。去 設定 > Safari > 位置，改做「允許」。"
+      : "未授權位置。撳一下再允許。";
+  }
   if (err.code === 2) return "暫時拎唔到位置，撳一下再試。";
   if (err.code === 3) return "定位逾時，撳一下再試。";
   return err.message || "定位失敗";
@@ -150,10 +160,6 @@ function renderSuggest(routes, leg) {
       `;
     })
     .join("");
-  list.querySelectorAll("button").forEach((button) => {
-    button.addEventListener("mousedown", (event) => event.preventDefault());
-    button.addEventListener("click", () => pick(leg, Number(button.dataset.i)));
-  });
 }
 
 async function search(leg) {
@@ -506,6 +512,9 @@ function wireSearch(leg) {
   });
   input.addEventListener("focus", () => {
     if (input.value.trim()) search(leg);
+    setTimeout(() => {
+      input.closest(".sheet")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }, 280);
   });
   input.addEventListener("blur", () => {
     setTimeout(() => {
@@ -534,12 +543,23 @@ function wireSearch(leg) {
 
 async function locate() {
   if (state.locating) return;
+  if (!window.isSecureContext) {
+    $("originLabel").textContent = "用我的位置";
+    $("originSub").textContent = geoErrorMessage({});
+    return;
+  }
   state.locating = true;
   $("originLabel").textContent = "定位中…";
   $("originSub").textContent = "等緊你個位置";
   $("originBtn").classList.remove("is-ok");
   try {
-    const pos = await getCurrentPosition();
+    let pos;
+    try {
+      pos = await readPosition(false);
+    } catch (err) {
+      if (err?.code === 1) throw err;
+      pos = await readPosition(true);
+    }
     state.origin = { lat: pos.coords.latitude, long: pos.coords.longitude };
     $("originLabel").textContent = "我的位置";
     $("originSub").textContent = "已定位 · 撳一下更新";
@@ -566,8 +586,33 @@ async function onStopChange() {
   }
 }
 
+async function bootLocation() {
+  if (!window.isSecureContext) {
+    $("originSub").textContent = "用 https 開啟先可以定位。";
+    return;
+  }
+  let permission = "prompt";
+  try {
+    const result = await navigator.permissions.query({ name: "geolocation" });
+    permission = result.state;
+  } catch {
+    permission = isIos() ? "prompt" : "unknown";
+  }
+  if (permission === "granted" || (!isIos() && permission !== "denied")) {
+    locate();
+    return;
+  }
+  $("originSub").textContent = permission === "denied" ? geoErrorMessage({ code: 1 }) : "撳一下允許定位";
+}
+
 wireSearch(1);
 wireSearch(2);
+$("suggest").addEventListener("pointerdown", (event) => {
+  const button = event.target.closest("button[data-i]");
+  if (!button || state.activeLeg == null) return;
+  event.preventDefault();
+  pick(state.activeLeg, Number(button.dataset.i));
+});
 $("swapBtn").addEventListener("click", swapLegs);
 $("originBtn").addEventListener("click", locate);
 $("board1Eta").addEventListener("change", () => {
@@ -579,5 +624,5 @@ $("walkMinutes").addEventListener("change", debounce(() => onStopChange(), 250))
 $("stop1").addEventListener("change", onStopChange);
 $("stop2").addEventListener("change", onStopChange);
 
-locate();
+bootLocation();
 refreshStatus();

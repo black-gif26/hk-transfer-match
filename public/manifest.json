@@ -1,0 +1,23 @@
+{
+  "name": "駁車時",
+  "short_name": "駁車時",
+  "lang": "zh-Hant",
+  "description": "搜兩程巴士路線，即刻睇轉乘時間。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#efe7d4",
+  "theme_color": "#083f3c",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
