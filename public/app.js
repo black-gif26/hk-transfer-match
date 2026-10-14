@@ -14,6 +14,7 @@ const state = {
   selected: null,
   match: null,
   mode: "fastest",
+  transferTouched: false,
 };
 
 let fillingControls = false;
@@ -255,9 +256,8 @@ function refreshStatus(message) {
     return;
   }
   if (state.plan?.candidates?.length) {
-    $("status").textContent = state.origin
-      ? `已列出最接近的 ${state.plan.candidates.length} 班車。`
-      : `未用定位。已列出最接近的 ${state.plan.candidates.length} 班車。`;
+    const located = state.origin ? "" : "未用定位。";
+    $("status").textContent = `${located}第 3 步可以揀轉車站，而家有 ${state.plan.candidates.length} 個。`;
   }
 }
 
@@ -271,6 +271,8 @@ function schedulePlan() {
     state.plan = null;
     state.match = null;
     state.selected = null;
+    state.transferTouched = false;
+    hideTransfer();
     $("results").innerHTML = "";
     refreshStatus();
     return;
@@ -285,7 +287,9 @@ function preferredBoard1Eta() {
 async function runPlan() {
   if (!readyToPlan()) return;
   const token = ++state.planToken;
-  refreshStatus("搵緊最接近的 3 班車…");
+  state.transferTouched = false;
+  hideTransfer();
+  refreshStatus("搵緊可以轉車嘅站…");
   $("results").innerHTML = `<p class="loading">搵緊轉乘…</p>`;
   const legPayload = (leg) => ({
     co: leg.co,
@@ -426,8 +430,47 @@ async function applyCandidate(index, token = state.planToken) {
     state.match = null;
   }
   if (token !== state.planToken) return;
+  renderTransferOptions();
   renderResults();
   refreshStatus();
+}
+
+function hideTransfer() {
+  const row = $("transferRow");
+  const select = $("transferStop");
+  row.hidden = true;
+  fillingControls = true;
+  select.innerHTML = `<option value="">用建議站</option>`;
+  select.value = "";
+  fillingControls = false;
+}
+
+function transferLabel(candidate) {
+  const when = candidate.board2InMinutes == null ? "未有時間" : `${candidate.board2InMinutes} 分鐘後`;
+  return `${when} · 落 ${candidate.alight1.nameTc} → ${candidate.walkMeters}m → 上 ${candidate.board2.nameTc}`;
+}
+
+function renderTransferOptions() {
+  const select = $("transferStop");
+  const row = $("transferRow");
+  const candidates = state.plan?.candidates || [];
+  if (!candidates.length) {
+    hideTransfer();
+    return;
+  }
+  const keep = state.transferTouched ? select.value : "";
+  fillingControls = true;
+  select.innerHTML = `<option value="">用建議站</option>${candidates
+    .map((candidate, index) => `<option value="${index}">${escapeHtml(transferLabel(candidate))}</option>`)
+    .join("")}`;
+  select.disabled = false;
+  row.hidden = false;
+  if (keep && [...select.options].some((option) => option.value === keep)) {
+    select.value = keep;
+  } else if (state.selected != null) {
+    select.value = String(state.selected);
+  }
+  fillingControls = false;
 }
 
 function offStopName() {
@@ -472,19 +515,6 @@ function renderResults() {
     ? `${fmtTime(pair.leg1Eta)} 落車 · ${fmtTime(pair.readyAt)} 行到 · ${pair.leg2Eta ? fmtTime(pair.leg2Eta) : "—"} 上第二程`
     : chosen.scoreTc;
 
-  const alts = plan.candidates
-    .map((candidate, index) => {
-      if (index === selected) return "";
-      const when = candidate.board2InMinutes == null ? "未有時間" : `${candidate.board2InMinutes} 分鐘後`;
-      return `
-        <button type="button" class="alt" data-pick="${index}">
-          <strong>${when} · ${candidate.hasMatch ? "可接" : "未接"}</strong>
-          <span>落 ${escapeHtml(candidate.alight1.nameTc)} → 步行 ${candidate.walkMeters}m → 上 ${escapeHtml(candidate.board2.nameTc)}</span>
-        </button>
-      `;
-    })
-    .join("");
-
   box.innerHTML = `
     ${modeButtons}
     <article class="card">
@@ -514,16 +544,8 @@ function renderResults() {
       </ol>
       <p class="match-line">${escapeHtml(detail)}</p>
     </article>
-    <div class="alts">${alts}</div>
   `;
   wireModes();
-  box.querySelectorAll("[data-pick]").forEach((button) => {
-    button.addEventListener("click", () => {
-      applyCandidate(Number(button.dataset.pick)).catch((err) => {
-        box.innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
-      });
-    });
-  });
 }
 
 function wireModes() {
@@ -661,6 +683,22 @@ $("stop1").addEventListener("change", () => {
 $("stop2").addEventListener("change", () => {
   if (!fillingControls) state.stopTouched[2] = true;
   onStopChange();
+});
+$("transferStop").addEventListener("change", () => {
+  if (fillingControls || !state.plan?.candidates?.length) return;
+  const value = $("transferStop").value;
+  if (!value) {
+    state.transferTouched = false;
+    const firstGood = state.plan.candidates.findIndex((candidate) => candidate.hasMatch);
+    applyCandidate(firstGood >= 0 ? firstGood : 0).catch((err) => {
+      $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+    });
+    return;
+  }
+  state.transferTouched = true;
+  applyCandidate(Number(value)).catch((err) => {
+    $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+  });
 });
 
 bootLocation();

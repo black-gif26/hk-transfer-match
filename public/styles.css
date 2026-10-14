@@ -152,6 +152,11 @@ body {
   background: var(--sea-deep);
 }
 
+.pin.n.third {
+  background: var(--tram);
+  color: #1c1400;
+}
+
 .stop-row.is-swap {
   min-height: 0;
 }
