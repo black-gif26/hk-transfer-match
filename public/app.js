@@ -305,6 +305,8 @@ async function runPlan() {
         bufferMinutes: Number($("bufferMinutes").value || 1),
         limit: 3,
         preferredBoard1Eta: preferredBoard1Eta(),
+        board1StopId: state.stopTouched[1] ? $("stop1").value || null : null,
+        alight2StopId: state.stopTouched[2] ? $("stop2").value || null : null,
       }),
     });
     if (token !== state.planToken) return;
@@ -371,11 +373,11 @@ async function fillStops(leg, preferredId) {
   fillingControls = false;
 }
 
-async function runMatch() {
+async function runMatch(candidate) {
   const route1 = state.leg[1];
   const route2 = state.leg[2];
-  const stop1 = $("stop1").value;
-  const stop2 = $("stop2").value;
+  const stop1 = candidate?.alight1?.stopId;
+  const stop2 = candidate?.board2?.stopId;
   if (!route1 || !route2 || !stop1 || !stop2) return null;
   const walkRaw = $("walkMinutes").value;
   const bufferRaw = $("bufferMinutes").value;
@@ -406,8 +408,8 @@ async function applyCandidate(index, token = state.planToken) {
   const candidate = state.plan?.candidates?.[index];
   if (!candidate) return;
   state.selected = index;
-  const prefer1 = state.stopTouched[1] && $("stop1").value ? $("stop1").value : candidate.alight1.stopId;
-  const prefer2 = state.stopTouched[2] && $("stop2").value ? $("stop2").value : candidate.board2.stopId;
+  const prefer1 = state.stopTouched[1] ? $("stop1").value : state.plan.board1.stopId;
+  const prefer2 = state.stopTouched[2] ? $("stop2").value : "";
   try {
     await Promise.all([
       fillStops(1, prefer1),
@@ -419,13 +421,19 @@ async function applyCandidate(index, token = state.planToken) {
   if (token !== state.planToken) return;
   $("walkMinutes").value = String(candidate.walkMinutes);
   try {
-    state.match = await runMatch();
+    state.match = await runMatch(candidate);
   } catch {
     state.match = null;
   }
   if (token !== state.planToken) return;
   renderResults();
   refreshStatus();
+}
+
+function offStopName() {
+  const id = $("stop2").value;
+  if (!id) return "";
+  return state.stops[2].find((stop) => stop.stopId === id)?.nameTc || "";
 }
 
 function matchBadge() {
@@ -500,6 +508,7 @@ function renderResults() {
           <span class="dot"></span>
           <div>
             <b>${escapeHtml(state.leg[2].route)}</b> ${fmtTime(chosen.leg2Eta)} 上 ${escapeHtml(chosen.board2.nameTc)}
+            ${offStopName() ? `<small>落 ${escapeHtml(offStopName())}</small>` : ""}
           </div>
         </li>
       </ol>
@@ -605,14 +614,9 @@ async function locate() {
   }
 }
 
-async function onStopChange() {
-  if (fillingControls || state.selected == null) return;
-  try {
-    state.match = await runMatch();
-    renderResults();
-  } catch (err) {
-    $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
-  }
+function onStopChange() {
+  if (fillingControls) return;
+  schedulePlan();
 }
 
 async function bootLocation() {

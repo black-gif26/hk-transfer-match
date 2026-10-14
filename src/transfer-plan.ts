@@ -154,6 +154,7 @@ export async function resolveBoard1Context(params: {
   leg1: RouteRef;
   bufferMinutes?: number;
   preferredBoard1Eta?: string | null;
+  preferredBoard1StopId?: string | null;
   budget?: SubrequestBudget;
 }): Promise<Board1Context & { stops1: StopInfo[] }> {
   const bufferMinutes = Math.max(0, params.bufferMinutes ?? 1);
@@ -170,9 +171,13 @@ export async function resolveBoard1Context(params: {
   const origin = params.origin && Number.isFinite(params.origin.lat) && Number.isFinite(params.origin.long)
     ? params.origin
     : null;
-  const nearest = origin
-    ? pickNearestStop(origin, stops1)
-    : stops1.find((stop) => Number.isFinite(stop.lat) && Number.isFinite(stop.long)) ?? stops1[0];
+  const chosenBoard = params.preferredBoard1StopId
+    ? stops1.find((stop) => stop.stopId === params.preferredBoard1StopId) ?? null
+    : null;
+  const nearest = chosenBoard
+    ?? (origin
+      ? pickNearestStop(origin, stops1)
+      : stops1.find((stop) => Number.isFinite(stop.lat) && Number.isFinite(stop.long)) ?? stops1[0]);
   const metersFromOrigin = origin ? Math.round(distanceMeters(origin, nearest)) : 0;
   const walkMinutesFromOrigin = origin
     ? Math.max(1, Math.ceil(metersFromOrigin / ((4.5 * 1000) / 60)))
@@ -380,6 +385,8 @@ export async function planTransfer(params: {
   bufferMinutes?: number;
   limit?: number;
   preferredBoard1Eta?: string | null;
+  board1StopId?: string | null;
+  alight2StopId?: string | null;
   budget?: SubrequestBudget;
 }): Promise<TransferPlanResult> {
   const maxTransferMeters = Math.min(Math.max(params.maxTransferMeters ?? 450, 80), 1200);
@@ -394,6 +401,7 @@ export async function planTransfer(params: {
       leg1: params.leg1,
       bufferMinutes,
       preferredBoard1Eta: params.preferredBoard1Eta,
+      preferredBoard1StopId: params.board1StopId,
       budget,
     }),
     listRouteStops(params.leg2.co, params.leg2.route, params.leg2.bound, params.leg2.serviceType, budget),
@@ -401,10 +409,26 @@ export async function planTransfer(params: {
 
   if (!stops2.length) throw new Error("第二程未有車站資料");
 
+  const alight2 = params.alight2StopId
+    ? stops2.find((stop) => stop.stopId === params.alight2StopId) ?? null
+    : null;
+  const boardingStops2 = alight2 ? stops2.filter((stop) => stop.seq < alight2.seq) : stops2;
+
   const board1Eta = board1.boardEta;
   const tripLabel = board1EtaSource === "manual" ? "你揀嘅班次" : "自動班次";
 
-  const pairs = buildPairs(stops1, stops2, board1.seq, maxTransferMeters);
+  if (alight2 && !boardingStops2.length) {
+    return {
+      mode: params.mode,
+      board1,
+      board1Departures,
+      board1EtaSource,
+      candidates: [],
+      summaryTc: `第二程落車站「${alight2.nameTc}」前面冇站可以上第二程。`,
+    };
+  }
+
+  const pairs = buildPairs(stops1, boardingStops2, board1.seq, maxTransferMeters);
   if (!pairs.length) {
     return {
       mode: params.mode,

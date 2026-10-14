@@ -66,7 +66,7 @@ export default {
 
 async function handleApi(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return json({ ok: true, service: "hk-transfer-match", version: "0.3.4" });
+    return json({ ok: true, service: "hk-transfer-match", version: "0.3.5" });
   }
 
   if (request.method === "GET" && url.pathname === "/api/nearby") {
@@ -185,6 +185,8 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       bufferMinutes?: number;
       limit?: number;
       preferredBoard1Eta?: string | null;
+      board1StopId?: string | null;
+      alight2StopId?: string | null;
     };
 
     const origin = body.origin && Number.isFinite(body.origin.lat) && Number.isFinite(body.origin.long)
@@ -221,6 +223,8 @@ async function handleApi(request: Request, url: URL): Promise<Response> {
       bufferMinutes: body.bufferMinutes,
       limit: body.limit,
       preferredBoard1Eta: body.preferredBoard1Eta,
+      board1StopId: body.board1StopId || null,
+      alight2StopId: body.alight2StopId || null,
       budget,
     });
     console.log(JSON.stringify({ level: "info", event: "plan-transfer", subrequests: budget.used, mode }));
