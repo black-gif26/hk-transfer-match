@@ -17,6 +17,8 @@ export interface TransferPair {
   gapMinutes: number;
   status: "comfortable" | "tight" | "miss";
   statusTc: string;
+  /** True when the alight time is a ride estimate, not a published ETA. */
+  leg1Estimated?: boolean;
 }
 
 export interface TransferResult {
@@ -65,15 +67,25 @@ export function matchTransfer(params: {
   bufferMinutes: number;
   /** When set, ignore alight ETAs that belong to a bus you have not boarded yet. */
   board1Eta?: string | null;
-  /** Minimum minutes on the first bus before an alight ETA can count. */
+  /**
+   * Estimated minutes from boarding to this alight stop.
+   * Published ETAs earlier than about 70% of this belong to a previous bus.
+   * If nothing in the feed is late enough, the arrival is estimated instead.
+   */
   minRideMinutes?: number | null;
 }): TransferResult {
   const { leg1, leg2, walkMinutes, bufferMinutes } = params;
-  const minRideMinutes = Math.max(0, params.minRideMinutes ?? 0);
+  const rideMinutes = Math.max(0, params.minRideMinutes ?? 0);
   const boardMs = params.board1Eta ? parseEta(params.board1Eta) : NaN;
-  const leg1Etas = Number.isFinite(boardMs)
-    ? leg1.etas.filter((eta) => parseEta(eta.eta) >= boardMs + minRideMinutes * 60_000)
+  const floorMinutes = rideMinutes > 0 ? Math.max(1, Math.round(rideMinutes * 0.7)) : 0;
+  let leg1Estimated = false;
+  let leg1Etas = Number.isFinite(boardMs)
+    ? leg1.etas.filter((eta) => parseEta(eta.eta) >= boardMs + floorMinutes * 60_000)
     : leg1.etas;
+  if (!leg1Etas.length && Number.isFinite(boardMs) && rideMinutes > 0 && params.board1Eta) {
+    leg1Estimated = true;
+    leg1Etas = [{ eta: addMinutes(params.board1Eta, rideMinutes), etaSeq: 0, destTc: "", rmkTc: "" }];
+  }
   const pairs: TransferPair[] = [];
 
   for (const e1 of leg1Etas) {
@@ -94,6 +106,7 @@ export function matchTransfer(params: {
         gapMinutes: -1,
         status: "miss",
         statusTc: "第二程未見足夠遲嘅班次",
+        leg1Estimated,
       });
       continue;
     }
@@ -121,16 +134,19 @@ export function matchTransfer(params: {
       gapMinutes,
       status,
       statusTc,
+      leg1Estimated,
     });
   }
 
   const matched = pairs.filter((p) => p.status !== "miss");
   const hasMatch = matched.length > 0;
   let summaryTc: string;
-  if (!leg1.etas.length) {
+  if (leg1Estimated && hasMatch) {
+    summaryTc = `按行車約 ${rideMinutes} 分估算落到轉車站，再接第二程。`;
+  } else if (leg1Estimated && !hasMatch) {
+    summaryTc = `行車約 ${rideMinutes} 分先到轉車站，第二程更遲班次未出。`;
+  } else if (!leg1.etas.length) {
     summaryTc = "第一程暫時未有 ETA，可能收車或者資料暫時空。";
-  } else if (!leg1Etas.length) {
-    summaryTc = "見到嘅落車時間早過你上第一程，接唔到呢班。";
   } else if (!leg2.etas.length) {
     summaryTc = "第二程暫時未有 ETA，可能收車或者資料暫時空。";
   } else if (!hasMatch) {

@@ -1,5 +1,6 @@
 import {
   distanceMeters,
+  estimateRideMinutes,
   estimateWalkMinutes,
   listEtas,
   listRouteStops,
@@ -38,6 +39,10 @@ export interface TransferCandidate {
   timed: boolean;
   /** ok = a real chain; pending = alight ETA not published yet; no_second = second bus not in the ETA window; unknown = not checked. */
   etaState: "ok" | "pending" | "no_second" | "unknown";
+  /** Estimated minutes riding from the boarding stop to this alight stop. */
+  rideMinutes: number;
+  /** True when leg1Eta is the ride estimate rather than a published ETA. */
+  leg1Estimated: boolean;
   scoreTc: string;
 }
 
@@ -258,6 +263,7 @@ const CLOSEST_BUSES = 3;
 
 function bareCandidate(
   pair: { alight1: StopInfo; board2: StopInfo; walkMeters: number; walkMinutes: number },
+  board1: StopInfo,
   board1Eta: string | null,
 ): TransferCandidate {
   return {
@@ -275,6 +281,8 @@ function bareCandidate(
     board2InMinutes: null,
     timed: false,
     etaState: "unknown",
+    rideMinutes: estimateRideMinutes(board1, pair.alight1),
+    leg1Estimated: false,
     scoreTc: `轉車步行 ${pair.walkMeters}m · 落 ${pair.alight1.nameTc} → 上 ${pair.board2.nameTc}`,
   };
 }
@@ -302,6 +310,7 @@ async function scoreCandidate(params: {
     scoreTc: string,
     etaState: "pending" | "no_second",
     leg1Eta: string | null = null,
+    estimated = false,
   ): TransferCandidate => ({
     alight1: pair.alight1,
     board2: pair.board2,
@@ -317,6 +326,8 @@ async function scoreCandidate(params: {
     board2InMinutes: null,
     timed: true,
     etaState,
+    rideMinutes,
+    leg1Estimated: estimated,
     scoreTc,
   });
 
@@ -325,28 +336,17 @@ async function scoreCandidate(params: {
     listEtas(leg2.co, leg2.route, pair.board2.stopId, leg2.serviceType, budget),
   ]);
 
-  // Open ETA has no trip id. Keep any alight after you board; an earlier
-  // time belongs to a previous bus. Do not also demand a long ride, or the
-  // real bus is still outside the short ETA window and every stop looks missed.
-  const minRideMinutes = 1;
-  const earliestAlightMs = board1Eta
-    ? parseEtaMs(board1Eta) + minRideMinutes * 60_000
-    : nowMs;
-
-  const etas1 = etas1Raw.filter((e) => parseEtaMs(e.eta) >= earliestAlightMs);
-  if (!etas1.length) {
-    return miss(
-      `轉車步行 ${pair.walkMeters}m · 呢班落車時間未出`,
-      "pending",
-    );
-  }
+  // Ride from the boarding stop to this interchange, then see if a second
+  // bus leaves after that arrival. A published ETA much sooner is the
+  // previous bus already at the stop, not the one you just boarded.
+  const rideMinutes = estimateRideMinutes(board1, pair.alight1);
 
   const matched = matchTransfer({
     leg1: {
       ...leg1,
       stopId: pair.alight1.stopId,
       stopNameTc: pair.alight1.nameTc,
-      etas: etas1,
+      etas: etas1Raw,
     },
     leg2: {
       ...leg2,
@@ -357,7 +357,7 @@ async function scoreCandidate(params: {
     walkMinutes: pair.walkMinutes,
     bufferMinutes,
     board1Eta,
-    minRideMinutes: 0,
+    minRideMinutes: rideMinutes,
   });
 
   // Never accept a chain that goes backwards in time (e.g. board2 before board1).
@@ -370,10 +370,14 @@ async function scoreCandidate(params: {
     ) ?? null;
 
   if (!best) {
+    const arrival = matched.pairs[0]?.leg1Eta ?? null;
     return miss(
-      `轉車步行 ${pair.walkMeters}m · 第二程更遲班次未出`,
-      "no_second",
-      etas1[0]?.eta ?? null,
+      arrival
+        ? `行車約 ${rideMinutes} 分先到轉車站，第二程更遲班次未出`
+        : `轉車步行 ${pair.walkMeters}m · 呢班落車時間未出`,
+      arrival ? "no_second" : "pending",
+      arrival,
+      !!matched.pairs[0]?.leg1Estimated,
     );
   }
 
@@ -393,7 +397,9 @@ async function scoreCandidate(params: {
     board2InMinutes,
     timed: true,
     etaState: "ok",
-    scoreTc: `第二程上車 ${fmtHkHm(best.leg2Eta)}（約 ${board2InMinutes} 分後）· 轉車步行 ${pair.walkMeters}m`,
+    rideMinutes,
+    leg1Estimated: !!best.leg1Estimated,
+    scoreTc: `行車約 ${rideMinutes} 分 · 第二程上車 ${fmtHkHm(best.leg2Eta)}（約 ${board2InMinutes} 分後）· 轉車步行 ${pair.walkMeters}m`,
   };
 }
 
@@ -480,7 +486,7 @@ export async function planTransfer(params: {
   const shortlist = listed.slice(0, Math.max(0, scoreCount));
   const scoredAll = [
     ...(shortlist.length ? await mapPool(shortlist, 3, scoreOne) : []),
-    ...listed.slice(scoreCount).map((pair) => bareCandidate(pair, board1Eta)),
+    ...listed.slice(scoreCount).map((pair) => bareCandidate(pair, board1, board1Eta)),
   ];
 
   if (params.mode === "shortest_walk" || params.mode === "manual") {

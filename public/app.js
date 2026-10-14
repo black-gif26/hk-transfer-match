@@ -459,10 +459,6 @@ async function fillStops(leg, preferredId) {
   if (leg === 1) loadBoard1Departures().catch(() => {});
 }
 
-function minRideMinutes() {
-  return 1;
-}
-
 function etaMs(iso) {
   const ms = new Date(iso || "").getTime();
   return Number.isFinite(ms) ? ms : NaN;
@@ -505,7 +501,7 @@ async function runMatch(candidate) {
       walkMinutes: walkRaw === "" ? null : Number(walkRaw),
       bufferMinutes: bufferRaw === "" ? 1 : Number(bufferRaw),
       board1Eta: candidate.board1Eta,
-      minRideMinutes: minRideMinutes(),
+      minRideMinutes: candidate.rideMinutes || 1,
     }),
   });
 }
@@ -539,6 +535,7 @@ function applyMatchToCandidate(candidate, match) {
   }
   candidate.etaState = "ok";
   candidate.hasMatch = true;
+  candidate.leg1Estimated = !!pair.leg1Estimated;
   candidate.leg1Eta = pair.leg1Eta;
   candidate.leg2Eta = pair.leg2Eta;
   candidate.readyAt = pair.readyAt;
@@ -583,7 +580,8 @@ function hideTransfer() {
 function transferParts(candidate) {
   const title = `落 ${candidate.alight1.nameTc} → ${candidate.walkMeters}m → 上 ${candidate.board2.nameTc}`;
   if (candidate.board2InMinutes != null && chainIsPossible(candidate.board1Eta, candidate.leg1Eta, candidate.leg2Eta)) {
-    return { title, meta: `${candidate.board2InMinutes} 分鐘後上第二程` };
+    const ride = candidate.rideMinutes ? `行車約 ${candidate.rideMinutes} 分 · ` : "";
+    return { title, meta: `${ride}${candidate.board2InMinutes} 分鐘後上第二程` };
   }
   if (candidate.etaState === "no_second") return { title, meta: "第二程更遲班次未出" };
   if (candidate.etaState === "pending" || candidate.timed) return { title, meta: "落車時間未出" };
@@ -656,8 +654,9 @@ function renderResults() {
       : chosen.etaState === "pending" || chosen.timed
         ? "落車時間未出"
         : "未有上車時間";
+  const rideNote = chosen.rideMinutes ? `行車約 ${chosen.rideMinutes} 分 · ` : "";
   const detail = ok
-    ? `${fmtTime(chosen.leg1Eta)} 落車 · ${fmtTime(chosen.readyAt)} 行到 · ${fmtTime(chosen.leg2Eta)} 上第二程`
+    ? `${rideNote}${chosen.leg1Estimated ? "約 " : ""}${fmtTime(chosen.leg1Eta)} 落車 · ${fmtTime(chosen.readyAt)} 行到 · ${fmtTime(chosen.leg2Eta)} 上第二程`
     : chosen.etaState === "no_second"
       ? "見到落車時間，但第二程可見班次都早過你行到。更遲嗰班可能未入 ETA。"
       : chosen.etaState === "pending" || chosen.timed
@@ -676,7 +675,7 @@ function renderResults() {
           <span class="dot"></span>
           <div>
             <b>${escapeHtml(state.leg[1].route)}</b> ${fmtTime(chosen.board1Eta)} 上 ${escapeHtml(plan.board1.nameTc)}
-            <small>${ok ? `${fmtTime(chosen.leg1Eta)} 落` : "落"} ${escapeHtml(chosen.alight1.nameTc)}</small>
+            <small>${chosen.leg1Eta ? `${chosen.leg1Estimated ? "約 " : ""}${fmtTime(chosen.leg1Eta)} 落` : "落"} ${escapeHtml(chosen.alight1.nameTc)}${chosen.rideMinutes ? ` · 行車約 ${chosen.rideMinutes} 分` : ""}</small>
           </div>
         </li>
         <li class="walk">

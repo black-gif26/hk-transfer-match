@@ -487,6 +487,29 @@ export function estimateWalkMinutes(
   return Math.max(1, Math.ceil(minutes));
 }
 
+/**
+ * Minutes on the bus from the boarding stop to the alight stop.
+ * Short hops use a local-bus speed; long gaps between stops are treated as
+ * highway running. Calibrated against A36 又新街 → 大棠路 (~3 min) and
+ * 又新街 → 屯門赤鱲角隧道 (~26 min).
+ */
+export function estimateRideMinutes(
+  from: { lat: number; long: number; seq: number },
+  to: { lat: number; long: number; seq: number },
+): number {
+  const gap = Math.max(1, to.seq - from.seq);
+  if (!Number.isFinite(from.lat) || !Number.isFinite(to.lat)) {
+    return Math.max(2, Math.round(gap * 1.2));
+  }
+  const meters = distanceMeters(from, to);
+  const spacing = meters / gap;
+  const highway = spacing >= 800;
+  const roadMeters = meters * (highway ? 1.25 : 1.35);
+  const speedMPerMin = ((highway ? 35 : 18) * 1000) / 60;
+  const dwell = highway ? 0 : Math.max(0, gap - 1) * 0.35;
+  return Math.max(1, Math.round(roadMeters / speedMPerMin + dwell));
+}
+
 export interface NearbyStop {
   co: Company;
   stopId: string;
