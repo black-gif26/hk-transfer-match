@@ -2,12 +2,9 @@
 <html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>駁車時 — 兩程轉乘站選擇</title>
-    <meta
-      name="description"
-      content="由出發地揀兩程巴士，再選最少步行、最快轉乘或人手選擇轉乘站。"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>駁車時</title>
+    <meta name="description" content="定出發地、揀兩程巴士，即時估轉乘站同上車時間。" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -20,146 +17,153 @@
     <main class="shell">
       <header class="hero">
         <div class="brand">駁車<span>時</span></div>
-        <p class="tagline">
-          定出發地、揀兩程車，再選轉乘站：最少步行、最快接駁，或者人手揀。
-        </p>
+        <p class="tagline">三步搞掂：定位 → 揀兩程車 → 睇轉乘建議。</p>
+        <ol class="steps" id="steps">
+          <li class="step is-current" data-step="1"><span>1</span>出發</li>
+          <li class="step" data-step="2"><span>2</span>路線</li>
+          <li class="step" data-step="3"><span>3</span>轉乘</li>
+        </ol>
       </header>
 
-      <section class="panel">
-        <div class="nearby">
-          <div class="nearby-head">
-            <div>
-              <h2>出發地</h2>
-              <p class="hint" id="originHint">先定位，之後會用呢度搵第一程最近上車站同轉乘點。</p>
-            </div>
-            <button class="cta secondary" id="locateBtn" type="button">用我個位置</button>
+      <section class="panel flow">
+        <!-- Step 1 -->
+        <section class="flow-card" id="cardOrigin">
+          <div class="flow-card-head">
+            <p class="step-kicker">第 1 步</p>
+            <h2>你而家喺邊？</h2>
           </div>
-        </div>
+          <button class="cta locate" id="locateBtn" type="button">分享位置開始</button>
+          <p class="status" id="originStatus">未定位。撳上面掣授權位置。</p>
+        </section>
 
-        <div class="legs">
-          <article class="leg" data-leg="1">
-            <div class="leg-head">
-              <h2>第一程</h2>
-              <span class="badge">Leg 1</span>
-            </div>
-            <div class="field">
-              <label for="co1">巴士公司</label>
-              <select id="co1">
-                <option value="KMB">九巴 / 龍運 KMB</option>
-                <option value="CTB">城巴 Citybus</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="routeQuery1">路線</label>
-              <div class="row">
-                <input id="routeQuery1" placeholder="例如 1A" autocomplete="off" />
+        <!-- Step 2 -->
+        <section class="flow-card is-dim" id="cardRoutes">
+          <div class="flow-card-head">
+            <p class="step-kicker">第 2 步</p>
+            <h2>搭邊兩程？</h2>
+          </div>
+
+          <div class="legs compact">
+            <article class="leg">
+              <div class="leg-head">
+                <h3>第一程</h3>
+              </div>
+              <div class="field">
+                <label for="co1">公司</label>
+                <select id="co1">
+                  <option value="KMB">九巴 / 龍運</option>
+                  <option value="CTB">城巴</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="routeQuery1">路線編號</label>
+                <input id="routeQuery1" placeholder="例如 1A" inputmode="text" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="route1">方向</label>
                 <select id="route1" disabled>
-                  <option value="">先輸入路線</option>
+                  <option value="">輸入路線後揀方向</option>
                 </select>
               </div>
-            </div>
-            <div class="field">
-              <label for="stop1">落車站（可由轉乘建議自動填）</label>
-              <select id="stop1" disabled>
-                <option value="">選路線後載入／由建議填入</option>
-              </select>
-            </div>
-          </article>
+              <!-- hidden until advanced -->
+              <select id="stop1" class="sr-only" tabindex="-1" aria-hidden="true"></select>
+            </article>
 
-          <article class="leg" data-leg="2">
-            <div class="leg-head">
-              <h2>第二程</h2>
-              <span class="badge">Leg 2</span>
-            </div>
-            <div class="field">
-              <label for="co2">巴士公司</label>
-              <select id="co2">
-                <option value="KMB">九巴 / 龍運 KMB</option>
-                <option value="CTB">城巴 Citybus</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="routeQuery2">路線</label>
-              <div class="row">
-                <input id="routeQuery2" placeholder="例如 5" autocomplete="off" />
+            <article class="leg">
+              <div class="leg-head">
+                <h3>第二程</h3>
+              </div>
+              <div class="field">
+                <label for="co2">公司</label>
+                <select id="co2">
+                  <option value="KMB">九巴 / 龍運</option>
+                  <option value="CTB">城巴</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="routeQuery2">路線編號</label>
+                <input id="routeQuery2" placeholder="例如 5" inputmode="text" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="route2">方向</label>
                 <select id="route2" disabled>
-                  <option value="">先輸入路線</option>
+                  <option value="">輸入路線後揀方向</option>
                 </select>
               </div>
-            </div>
-            <div class="field">
-              <label for="stop2">上車站（可由轉乘建議自動填）</label>
-              <select id="stop2" disabled>
-                <option value="">選路線後載入／由建議填入</option>
-              </select>
-            </div>
-          </article>
-        </div>
+              <select id="stop2" class="sr-only" tabindex="-1" aria-hidden="true"></select>
+            </article>
+          </div>
+        </section>
 
-        <div class="mode-block">
-          <h2>轉乘站選擇</h2>
-          <p class="hint">用出發地同兩程路線，列出轉乘站選項。</p>
-          <div class="mode-grid" role="radiogroup" aria-label="轉乘站選擇方式">
-            <label class="mode-card">
+        <!-- Step 3 -->
+        <section class="flow-card is-dim" id="cardPlan">
+          <div class="flow-card-head">
+            <p class="step-kicker">第 3 步</p>
+            <h2>點樣揀轉乘站？</h2>
+          </div>
+
+          <div class="seg" role="radiogroup" aria-label="轉乘模式">
+            <label class="seg-item">
               <input type="radio" name="planMode" value="shortest_walk" checked />
-              <span>
-                <strong>1. 最少步行</strong>
-                <small>轉車兩站愈近愈好</small>
-              </span>
+              <span>最少步行</span>
             </label>
-            <label class="mode-card">
+            <label class="seg-item">
               <input type="radio" name="planMode" value="fastest" />
-              <span>
-                <strong>2. 上車時間估算</strong>
-                <small>由出發地計到第二程最早上車時間</small>
-              </span>
+              <span>最早上車</span>
             </label>
-            <label class="mode-card">
+            <label class="seg-item">
               <input type="radio" name="planMode" value="manual" />
-              <span>
-                <strong>3. 人手選擇</strong>
-                <small>自己揀轉乘站（可睇附近站）</small>
-              </span>
+              <span>人手揀</span>
             </label>
           </div>
-          <div class="mode-actions">
-            <button class="cta" id="planBtn" type="button">列出轉乘站</button>
-            <button class="cta secondary" id="matchBtn" type="button">檢查已選站時間</button>
-          </div>
-        </div>
+          <p class="hint" id="modeHint">優先轉車兩站距離最短。</p>
+        </section>
 
-        <div id="planResult" class="plan-result" aria-live="polite"></div>
+        <div id="output" class="output" aria-live="polite"></div>
 
-        <details class="manual-nearby" id="manualNearby">
-          <summary>人手模式：附近站瀏覽（可選）</summary>
-          <p class="hint" id="nearbyHint">定位後可睇附近站，再填入落車／上車。</p>
-          <div id="nearbyList" class="nearby-list"></div>
-        </details>
-
-        <div class="controls">
+        <details class="advanced" id="advanced">
+          <summary>進階設定</summary>
           <div class="controls-grid">
             <div class="field" style="margin: 0">
               <label for="walkMinutes">轉車步行（分鐘）</label>
-              <input id="walkMinutes" type="number" min="0" step="1" placeholder="自動估算" />
+              <input id="walkMinutes" type="number" min="0" step="1" placeholder="自動" />
             </div>
             <div class="field" style="margin: 0">
-              <label for="bufferMinutes">額外緩衝（分鐘）</label>
+              <label for="bufferMinutes">緩衝（分鐘）</label>
               <input id="bufferMinutes" type="number" min="0" step="1" value="1" />
             </div>
             <div class="field" style="margin: 0">
-              <label for="maxTransferMeters">轉乘最大步行（米）</label>
+              <label for="maxTransferMeters">最大轉車距離（米）</label>
               <input id="maxTransferMeters" type="number" min="80" step="50" value="450" />
             </div>
           </div>
-          <p class="hint" id="walkHint">建議轉乘站會自動填步行分鐘；你亦可以人手改。</p>
-        </div>
+          <div class="field">
+            <label for="stop1Visible">人手改第一程落車站</label>
+            <select id="stop1Visible" disabled>
+              <option value="">搵到建議後可改</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="stop2Visible">人手改第二程上車站</label>
+            <select id="stop2Visible" disabled>
+              <option value="">搵到建議後可改</option>
+            </select>
+          </div>
+          <div id="nearbyBlock" class="nearby-block" hidden>
+            <p class="hint" id="nearbyHint">附近站（人手模式）</p>
+            <div id="nearbyList" class="nearby-list"></div>
+          </div>
+        </details>
 
-        <div class="result" id="result" aria-live="polite"></div>
-        <p class="meta">
-          資料來源：DATA.GOV.HK / KMB ETA、Citybus Next Bus。附近／轉乘建議暫時以九巴站座標為主。
-        </p>
+        <p class="meta">資料：DATA.GOV.HK（KMB / Citybus）。轉乘建議暫時以九巴站座標為主。</p>
       </section>
     </main>
+
+    <div class="sticky-bar">
+      <p class="sticky-hint" id="stickyHint">先分享位置</p>
+      <button class="cta" id="planBtn" type="button" disabled>開始搵轉乘</button>
+    </div>
+
     <script type="module" src="/app.js"></script>
   </body>
 </html>
