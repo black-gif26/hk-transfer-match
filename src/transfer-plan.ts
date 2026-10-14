@@ -36,6 +36,8 @@ export interface TransferCandidate {
   board2InMinutes: number | null;
   /** True once this interchange has been checked against live ETAs. */
   timed: boolean;
+  /** ok = a real chain; pending = alight ETA not published yet; no_second = second bus not in the ETA window; unknown = not checked. */
+  etaState: "ok" | "pending" | "no_second" | "unknown";
   scoreTc: string;
 }
 
@@ -272,6 +274,7 @@ function bareCandidate(
     readyAt: null,
     board2InMinutes: null,
     timed: false,
+    etaState: "unknown",
     scoreTc: `轉車步行 ${pair.walkMeters}m · 落 ${pair.alight1.nameTc} → 上 ${pair.board2.nameTc}`,
   };
 }
@@ -295,7 +298,11 @@ async function scoreCandidate(params: {
 }): Promise<TransferCandidate> {
   const { leg1, leg2, pair, bufferMinutes, board1, board1Eta, nowMs, budget } = params;
 
-  const miss = (scoreTc: string, leg1Eta: string | null = null): TransferCandidate => ({
+  const miss = (
+    scoreTc: string,
+    etaState: "pending" | "no_second",
+    leg1Eta: string | null = null,
+  ): TransferCandidate => ({
     alight1: pair.alight1,
     board2: pair.board2,
     walkMeters: pair.walkMeters,
@@ -309,6 +316,7 @@ async function scoreCandidate(params: {
     readyAt: null,
     board2InMinutes: null,
     timed: true,
+    etaState,
     scoreTc,
   });
 
@@ -317,10 +325,10 @@ async function scoreCandidate(params: {
     listEtas(leg2.co, leg2.route, pair.board2.stopId, leg2.serviceType, budget),
   ]);
 
-  // Only use alight ETAs that can belong to the bus you board at board1.
-  // (Open ETA has no trip id, so we approximate with min ride time by stop gap.)
-  const stopGap = Math.max(1, pair.alight1.seq - board1.seq);
-  const minRideMinutes = Math.max(3, Math.round(stopGap * 1.8));
+  // Open ETA has no trip id. Keep any alight after you board; an earlier
+  // time belongs to a previous bus. Do not also demand a long ride, or the
+  // real bus is still outside the short ETA window and every stop looks missed.
+  const minRideMinutes = 1;
   const earliestAlightMs = board1Eta
     ? parseEtaMs(board1Eta) + minRideMinutes * 60_000
     : nowMs;
@@ -328,7 +336,8 @@ async function scoreCandidate(params: {
   const etas1 = etas1Raw.filter((e) => parseEtaMs(e.eta) >= earliestAlightMs);
   if (!etas1.length) {
     return miss(
-      `轉車步行 ${pair.walkMeters}m · 未見第一程落車 ETA（可能仲未入到顯示範圍）`,
+      `轉車步行 ${pair.walkMeters}m · 呢班落車時間未出`,
+      "pending",
     );
   }
 
@@ -361,7 +370,11 @@ async function scoreCandidate(params: {
     ) ?? null;
 
   if (!best) {
-    return miss(`轉車步行 ${pair.walkMeters}m · 暫時接唔到合理時間嘅第二程`, etas1[0]?.eta ?? null);
+    return miss(
+      `轉車步行 ${pair.walkMeters}m · 第二程更遲班次未出`,
+      "no_second",
+      etas1[0]?.eta ?? null,
+    );
   }
 
   const board2InMinutes = minutesFromNow(best.leg2Eta, nowMs);
@@ -379,6 +392,7 @@ async function scoreCandidate(params: {
     readyAt: best.readyAt,
     board2InMinutes,
     timed: true,
+    etaState: "ok",
     scoreTc: `第二程上車 ${fmtHkHm(best.leg2Eta)}（約 ${board2InMinutes} 分後）· 轉車步行 ${pair.walkMeters}m`,
   };
 }

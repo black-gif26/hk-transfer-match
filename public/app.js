@@ -459,9 +459,8 @@ async function fillStops(leg, preferredId) {
   if (leg === 1) loadBoard1Departures().catch(() => {});
 }
 
-function minRideMinutes(boardSeq, alightSeq) {
-  const gap = Math.max(1, Number(alightSeq) - Number(boardSeq));
-  return Math.max(3, Math.round(gap * 1.8));
+function minRideMinutes() {
+  return 1;
 }
 
 function etaMs(iso) {
@@ -486,8 +485,6 @@ async function runMatch(candidate) {
   if (!route1 || !route2 || !stop1 || !stop2) return null;
   const walkRaw = $("walkMinutes").value;
   const bufferRaw = $("bufferMinutes").value;
-  const boardSeq = state.plan?.board1?.seq;
-  const alightSeq = candidate.alight1?.seq;
   return api("/api/match", {
     method: "POST",
     body: JSON.stringify({
@@ -508,9 +505,7 @@ async function runMatch(candidate) {
       walkMinutes: walkRaw === "" ? null : Number(walkRaw),
       bufferMinutes: bufferRaw === "" ? 1 : Number(bufferRaw),
       board1Eta: candidate.board1Eta,
-      minRideMinutes: Number.isFinite(Number(boardSeq)) && Number.isFinite(Number(alightSeq))
-        ? minRideMinutes(boardSeq, alightSeq)
-        : 3,
+      minRideMinutes: minRideMinutes(),
     }),
   });
 }
@@ -529,16 +524,20 @@ function applyMatchToCandidate(candidate, match) {
   );
   candidate.timed = true;
   if (!pair) {
+    const board = etaMs(candidate.board1Eta);
+    const laterAlight = (match.leg1?.etas || []).some((item) => etaMs(item.eta) > board);
+    candidate.etaState = laterAlight ? "no_second" : "pending";
     candidate.hasMatch = false;
-    candidate.leg1Eta = null;
     candidate.leg2Eta = null;
     candidate.readyAt = null;
     candidate.waitMinutes = null;
     candidate.gapMinutes = null;
     candidate.board2InMinutes = null;
-    candidate.scoreTc = "上第一程之後先至落車，呢個站暫時接唔到。";
+    if (candidate.etaState !== "no_second") candidate.leg1Eta = null;
+    candidate.scoreTc = candidate.etaState === "no_second" ? "第二程更遲班次未出。" : "呢班落車時間未出。";
     return;
   }
+  candidate.etaState = "ok";
   candidate.hasMatch = true;
   candidate.leg1Eta = pair.leg1Eta;
   candidate.leg2Eta = pair.leg2Eta;
@@ -586,7 +585,8 @@ function transferParts(candidate) {
   if (candidate.board2InMinutes != null && chainIsPossible(candidate.board1Eta, candidate.leg1Eta, candidate.leg2Eta)) {
     return { title, meta: `${candidate.board2InMinutes} 分鐘後上第二程` };
   }
-  if (candidate.timed) return { title, meta: "呢班第一程接唔到" };
+  if (candidate.etaState === "no_second") return { title, meta: "第二程更遲班次未出" };
+  if (candidate.etaState === "pending" || candidate.timed) return { title, meta: "落車時間未出" };
   return { title, meta: "未計班次，撳一下先查時間" };
 }
 
@@ -617,7 +617,9 @@ function offStopName() {
 
 function matchBadge(candidate) {
   if (!chainIsPossible(candidate.board1Eta, candidate.leg1Eta, candidate.leg2Eta)) {
-    return { label: candidate.timed ? "未接" : "計緊", cls: candidate.timed ? "miss" : "" };
+    if (candidate.etaState === "no_second") return { label: "等緊", cls: "tight" };
+    if (candidate.etaState === "pending" || candidate.timed) return { label: "未出", cls: "" };
+    return { label: "計緊", cls: "" };
   }
   if (candidate.waitMinutes != null && candidate.waitMinutes <= 2) return { label: "好逼", cls: "tight" };
   return { label: "可接", cls: "" };
@@ -647,12 +649,20 @@ function renderResults() {
   const ok = chainIsPossible(chosen.board1Eta, chosen.leg1Eta, chosen.leg2Eta);
   const badge = matchBadge(chosen);
   const minutes = ok ? chosen.board2InMinutes : null;
-  const minuteCaption = ok ? "分鐘後上第二程" : chosen.timed ? "接唔到第二程" : "未有上車時間";
+  const minuteCaption = ok
+    ? "分鐘後上第二程"
+    : chosen.etaState === "no_second"
+      ? "第二程更遲班次未出"
+      : chosen.etaState === "pending" || chosen.timed
+        ? "落車時間未出"
+        : "未有上車時間";
   const detail = ok
     ? `${fmtTime(chosen.leg1Eta)} 落車 · ${fmtTime(chosen.readyAt)} 行到 · ${fmtTime(chosen.leg2Eta)} 上第二程`
-    : chosen.timed
-      ? "落車時間早過上第一程，呢個轉法接唔到。等下一班先至算。"
-      : chosen.scoreTc;
+    : chosen.etaState === "no_second"
+      ? "見到落車時間，但第二程可見班次都早過你行到。更遲嗰班可能未入 ETA。"
+      : chosen.etaState === "pending" || chosen.timed
+        ? "呢班車嘅落車時間未出。ETA 通常只顯示最近幾班，唔代表接唔到。"
+        : chosen.scoreTc;
 
   box.innerHTML = `
     ${modeButtons}
