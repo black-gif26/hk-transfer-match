@@ -1,2 +1,0 @@
-lock tip[:16000] verified e4659caf142d
-next tip[:18000]
