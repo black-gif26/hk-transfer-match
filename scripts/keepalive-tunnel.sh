@@ -3,12 +3,13 @@ set -euo pipefail
 URL_FILE=/tmp/hk-transfer-public-url.txt
 DEV_URL=http://127.0.0.1:8787
 CLOUDFLARED=${CLOUDFLARED:-/tmp/cloudflared}
-PUBLIC_URL=${PUBLIC_URL:-https://mysterious-icons-transformation-hindu.trycloudflare.com}
+PUBLIC_URL=${PUBLIC_URL:-https://adapters-alex-shortly-bearing.trycloudflare.com}
 
 echo "$PUBLIC_URL" > "$URL_FILE"
 echo "Watching $PUBLIC_URL (will not restart tunnel unless process dies)"
 
 while true; do
+  # Keep local worker up
   if ! curl -fsS "$DEV_URL/api/health" >/dev/null 2>&1; then
     echo "$(date -Is) local worker down — restart wrangler"
     tmux -f /exec-daemon/tmux.portal.conf has-session -t "=hk-transfer-dev" 2>/dev/null || \
@@ -19,6 +20,7 @@ while true; do
     sleep 5
   fi
 
+  # Heartbeat existing tunnel (do not recreate while process alive)
   if pgrep -f 'cloudflared tunnel --url' >/dev/null 2>&1; then
     code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$PUBLIC_URL/api/health" || echo 000)
     echo "$(date -Is) tunnel heartbeat $code $PUBLIC_URL"
