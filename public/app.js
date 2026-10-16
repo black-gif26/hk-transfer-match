@@ -226,8 +226,6 @@ function refreshSticky() {
   if (mode === "location" && !state.origin) {
     $("stickyHint").textContent = "可用目前位置，或改用自行選擇上車站";
     btn.disabled = true;
-    btn.textContent = "開始�用自行選擇上車站";
-    btn.disabled = true;
     btn.textContent = "開始搵轉乘";
     setStep(1);
     return;
@@ -318,73 +316,4 @@ function syncVisibleStops(leg) {
     visible.append(new Option(opt.textContent, opt.value, false, opt.selected));
   }
   visible.disabled = hidden.disabled || !hidden.options.length;
-  visible.value = hidden.value;
-}
-
-function planInputSnapshot() {
-  const boarding = boardingPayload();
-  const stop = selectedBoardStop();
-  return {
-    boardingMode: boarding.boardingMode,
-    origin: boarding.origin ?? null,
-    boardStopId: boarding.boardStopId ?? stop?.stopId ?? null,
-    boardStopSeq: boarding.boardStopSeq ?? stop?.seq ?? null,
-    minutesToBoardStop: boarding.minutesToBoardStop ?? null,
-    leg1: parseRouteValue($("route1").value),
-    leg2: parseRouteValue($("route2").value),
-    mode: selectedMode(),
-    preferredBoard1Eta: preferredBoard1Eta(),
-    bufferMinutes: Number($("bufferMinutes").value || 1),
-    maxTransferMeters: Number($("maxTransferMeters").value || 450),
-  };
-}
-
-function boardingBodyFromSnap(snap) {
-  if (snap.boardingMode === "manual_stop") {
-    return {
-      boardingMode: "manual_stop",
-      boardStopId: snap.boardStopId,
-      boardStopSeq: snap.boardStopSeq,
-      minutesToBoardStop: snap.minutesToBoardStop,
-    };
-  }
-  return {
-    boardingMode: "location",
-    origin: snap.origin,
-  };
-}
-
-async function loadRoutes(leg) {
-  const co = $(`co${leg}`).value;
-  const q = $(`routeQuery${leg}`).value.trim();
-  const select = $(`route${leg}`);
-  const stopSelect = $(`stop${leg}`);
-  const genKey = `routes${leg}`;
-  const gen = ++gens[genKey];
-  const ac = abortAndStart(genKey);
-
-  if (!q) {
-    clearSelect(select, "輸入路線後揀方向", true);
-    clearSelect(stopSelect, null, true);
-    syncVisibleStops(leg);
-    state[leg].routes = [];
-    state[leg].stops = [];
-    if (leg === 1) fillBoardStopSelect([]);
-    clearPlanDependentState();
-    refreshSticky();
-    return;
-  }
-
-  select.disabled = true;
-  clearSelect(select, "載入中…", true);
-
-  try {
-    const { routes } = await api(
-      `/api/routes?co=${encodeURIComponent(co)}&q=${encodeURIComponent(q)}`,
-      { signal: ac.signal },
-    );
-    if (gen !== gens[genKey]) return;
-    state[leg].routes = routes;
-    if (!routes.length) {
-      clearSelect(select, "搵唔到路線", true);
-      refreshSticky();
+  visible.value
