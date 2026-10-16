@@ -1,1 +1,1 @@
-@/tmp/app.js.content
+PLACEHOLDER_LOAD_FROM_/tmp/create-full-app.json
