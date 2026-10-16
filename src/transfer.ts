@@ -11,11 +11,11 @@ export interface LegInput {
 
 export interface TransferPair {
   leg1Eta: string;
-  leg2Eta: string;
+  leg2Eta: string | null;
   readyAt: string;
-  waitMinutes: number;
-  gapMinutes: number;
-  status: "comfortable" | "tight" | "miss";
+  waitMinutes: number | null;
+  gapMinutes: number | null;
+  status: "comfortable" | "tight" | "outside_visible_eta";
   statusTc: string;
 }
 
@@ -39,6 +39,7 @@ export interface TransferResult {
   };
   pairs: TransferPair[];
   summaryTc: string;
+  /** True only when at least one pair has a visible catchable second departure. */
   hasMatch: boolean;
 }
 
@@ -48,7 +49,6 @@ function parseEta(iso: string): number {
 
 function addMinutes(iso: string, minutes: number): string {
   const d = new Date(parseEta(iso) + minutes * 60_000);
-  // Keep Hong Kong offset so UI / API stay consistent with ETA feeds.
   const hk = new Date(d.getTime() + 8 * 60 * 60 * 1000);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${hk.getUTCFullYear()}-${pad(hk.getUTCMonth() + 1)}-${pad(hk.getUTCDate())}T${pad(hk.getUTCHours())}:${pad(hk.getUTCMinutes())}:${pad(hk.getUTCSeconds())}+08:00`;
@@ -79,12 +79,12 @@ export function matchTransfer(params: {
     if (!best) {
       pairs.push({
         leg1Eta: e1.eta,
-        leg2Eta: "",
+        leg2Eta: null,
         readyAt,
-        waitMinutes: -1,
-        gapMinutes: -1,
-        status: "miss",
-        statusTc: "第二程未見足夠遲嘅班次",
+        waitMinutes: null,
+        gapMinutes: null,
+        status: "outside_visible_eta",
+        statusTc: "目前可見班次未能配對，稍後再查",
       });
       continue;
     }
@@ -115,18 +115,20 @@ export function matchTransfer(params: {
     });
   }
 
-  const matched = pairs.filter((p) => p.status !== "miss");
+  const matched = pairs.filter((p) => p.status !== "outside_visible_eta");
   const hasMatch = matched.length > 0;
   let summaryTc: string;
   if (!leg1.etas.length) {
-    summaryTc = "第一程暫時未有 ETA，可能收車或者資料暫時空。";
+    summaryTc = "第一程暫時未有可見 ETA（唔代表已收車）。";
   } else if (!leg2.etas.length) {
-    summaryTc = "第二程暫時未有 ETA，可能收車或者資料暫時空。";
+    summaryTc = "第二程暫時未有可見 ETA（唔代表已收車或無法轉乘）。";
   } else if (!hasMatch) {
-    summaryTc = "依家呢幾班第一程，行過去都趕唔切第二程可見班次。";
+    summaryTc = "目前可見第二程班次未能配對；稍後可能有更遲班次。";
   } else {
-    const best = matched.reduce((a, b) => (a.waitMinutes < b.waitMinutes ? a : b));
-    summaryTc = `有 ${matched.length} 個轉乘組合 match；最快落地後仲有約 ${best.waitMinutes} 分鐘等第二程。`;
+    const best = matched.reduce((a, b) =>
+      (a.waitMinutes ?? Infinity) < (b.waitMinutes ?? Infinity) ? a : b,
+    );
+    summaryTc = `有 ${matched.length} 個可見時間兼容組合；落地後約仲有 ${best.waitMinutes} 分鐘等第二程（估算）。`;
   }
 
   return {
