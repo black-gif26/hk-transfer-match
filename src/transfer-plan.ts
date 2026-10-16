@@ -530,3 +530,503 @@ export async function scoreCandidate(params: {
 
   const walkLabel = `轉車步行約 ${pair.walkMeters}m（直線）`;
 
+  if (board1TimingStatus === "upstream_error") {
+    return baseCandidate(
+      pair,
+      null,
+      "upstream_error",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.upstream_error}`,
+        timingNoteTc: TIMING_STATUS_TC.upstream_error,
+      },
+      nowMs,
+    );
+  }
+
+  if (board1TimingStatus === "preferred_gone") {
+    return baseCandidate(
+      pair,
+      null,
+      "preferred_gone",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.preferred_gone}`,
+        timingNoteTc: TIMING_STATUS_TC.preferred_gone,
+      },
+      nowMs,
+    );
+  }
+
+  if (board1TimingStatus === "manual_uncatchable") {
+    return baseCandidate(
+      pair,
+      board1Eta,
+      "manual_uncatchable",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.manual_uncatchable}`,
+        timingNoteTc: TIMING_STATUS_TC.manual_uncatchable,
+        board1Eta,
+      },
+      nowMs,
+    );
+  }
+
+  if (board1TimingStatus === "no_catchable_board1") {
+    return baseCandidate(
+      pair,
+      null,
+      "no_catchable_board1",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.no_catchable_board1}`,
+        timingNoteTc: TIMING_STATUS_TC.no_catchable_board1,
+      },
+      nowMs,
+    );
+  }
+
+  if (board1TimingStatus === "catchability_unverified" && !board1Eta) {
+    return baseCandidate(
+      pair,
+      null,
+      "catchability_unverified",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.catchability_unverified}`,
+        timingNoteTc: TIMING_STATUS_TC.catchability_unverified,
+      },
+      nowMs,
+    );
+  }
+
+  if (board1TimingStatus === "awaiting_board1_eta" || !board1Eta) {
+    return baseCandidate(
+      pair,
+      null,
+      board1TimingStatus === "catchability_unverified"
+        ? "catchability_unverified"
+        : "awaiting_board1_eta",
+      {
+        scoreTc: `${walkLabel} · ${
+          board1TimingStatus === "catchability_unverified"
+            ? TIMING_STATUS_TC.catchability_unverified
+            : TIMING_STATUS_TC.awaiting_board1_eta
+        }`,
+        timingNoteTc:
+          board1TimingStatus === "catchability_unverified"
+            ? TIMING_STATUS_TC.catchability_unverified
+            : TIMING_STATUS_TC.awaiting_board1_eta,
+      },
+      nowMs,
+    );
+  }
+
+  let etas1Raw: EtaItem[] = [];
+  let etas2: EtaItem[] = [];
+  let leg1Err = false;
+  let leg2Err = false;
+
+  const [r1, r2] = await Promise.allSettled([
+    listEtas(leg1.co, leg1.route, pair.alight1.stopId, leg1.serviceType, {
+      bound: leg1.bound,
+      stopSeq: pair.alight1.seq,
+    }),
+    listEtas(leg2.co, leg2.route, pair.board2.stopId, leg2.serviceType, {
+      bound: leg2.bound,
+      stopSeq: pair.board2.seq,
+    }),
+  ]);
+
+  if (r1.status === "fulfilled") etas1Raw = r1.value;
+  else leg1Err = true;
+  if (r2.status === "fulfilled") etas2 = r2.value;
+  else leg2Err = true;
+
+  if (leg1Err && leg2Err) {
+    return baseCandidate(
+      pair,
+      board1Eta,
+      "upstream_error",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.upstream_error}`,
+        timingNoteTc: TIMING_STATUS_TC.upstream_error,
+      },
+      nowMs,
+    );
+  }
+
+  const { earliestMs, noteTc: continuityNote } = earliestAlightMsHeuristic(
+    board1Eta,
+    board1.seq,
+    pair.alight1.seq,
+    nowMs,
+  );
+
+  if (leg1Err) {
+    return baseCandidate(
+      pair,
+      board1Eta,
+      "upstream_error",
+      {
+        scoreTc: `${walkLabel} · 第一程落車 ETA 暫時無法讀取`,
+        timingNoteTc: "第一程落車班次資料暫時無法讀取；轉車站仍然有效。",
+        board1Eta,
+      },
+      nowMs,
+    );
+  }
+
+  const etas1 = etas1Raw.filter((e) => parseEtaMs(e.eta) >= earliestMs);
+
+  if (!etas1Raw.length) {
+    return baseCandidate(
+      pair,
+      board1Eta,
+      "awaiting_leg1_eta",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.awaiting_leg1_eta}`,
+        timingNoteTc: `${TIMING_STATUS_TC.awaiting_leg1_eta}。${continuityNote}`,
+        board1Eta,
+      },
+      nowMs,
+    );
+  }
+
+  if (!etas1.length) {
+    return baseCandidate(
+      pair,
+      board1Eta,
+      "awaiting_leg1_eta",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.awaiting_leg1_eta}`,
+        timingNoteTc: `可見落車 ETA 都早過上車時間推算；${continuityNote}`,
+        board1Eta,
+        leg1Eta: etas1Raw[0]?.eta ?? null,
+      },
+      nowMs,
+    );
+  }
+
+  if (leg2Err) {
+    return baseCandidate(
+      pair,
+      board1Eta,
+      "upstream_error",
+      {
+        scoreTc: `${walkLabel} · 第二程 ETA 暫時無法讀取`,
+        timingNoteTc: "第二程班次資料暫時無法讀取；轉車站仍然有效。",
+        board1Eta,
+        leg1Eta: etas1[0]?.eta ?? null,
+        timingConfidence: "estimated_unverified",
+      },
+      nowMs,
+    );
+  }
+
+  if (!etas2.length) {
+    return baseCandidate(
+      pair,
+      board1Eta,
+      "awaiting_leg2_eta",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.awaiting_leg2_eta}`,
+        timingNoteTc: `${TIMING_STATUS_TC.awaiting_leg2_eta}。空列表唔代表已收車。${continuityNote}`,
+        board1Eta,
+        leg1Eta: etas1[0]?.eta ?? null,
+        timingConfidence: "estimated_unverified",
+      },
+      nowMs,
+    );
+  }
+
+  const matched = matchTransfer({
+    leg1: {
+      ...leg1,
+      stopId: pair.alight1.stopId,
+      stopNameTc: pair.alight1.nameTc,
+      etas: etas1,
+    },
+    leg2: {
+      ...leg2,
+      stopId: pair.board2.stopId,
+      stopNameTc: pair.board2.nameTc,
+      etas: etas2,
+    },
+    walkMinutes: pair.walkMinutes,
+    bufferMinutes,
+  });
+
+  const best =
+    matched.pairs.find(
+      (p) =>
+        p.status !== "outside_visible_eta" &&
+        !!p.leg2Eta &&
+        isChronological(board1Eta, p.leg1Eta, p.leg2Eta),
+    ) ?? null;
+
+  if (!best || !best.leg2Eta) {
+    return baseCandidate(
+      pair,
+      board1Eta,
+      "outside_visible_eta",
+      {
+        scoreTc: `${walkLabel} · ${TIMING_STATUS_TC.outside_visible_eta}`,
+        timingNoteTc: `${TIMING_STATUS_TC.outside_visible_eta}。唔代表之後冇班次。${continuityNote}`,
+        board1Eta,
+        leg1Eta: etas1[0]?.eta ?? null,
+        timingConfidence: "estimated_unverified",
+      },
+      nowMs,
+    );
+  }
+
+  const board2InMinutes = minutesFromNow(best.leg2Eta, nowMs);
+  return baseCandidate(
+    pair,
+    board1Eta,
+    "eta_matched",
+    {
+      scoreTc: `第二程上車 ${fmtHkHm(best.leg2Eta)}（約 ${board2InMinutes} 分後）· ${walkLabel}`,
+      timingNoteTc: `${TIMING_STATUS_TC.eta_matched}。${continuityNote}`,
+      timingConfidence: "estimated_unverified",
+      waitMinutes: best.waitMinutes,
+      gapMinutes: best.gapMinutes,
+      board1Eta,
+      leg1Eta: best.leg1Eta,
+      leg2Eta: best.leg2Eta,
+      readyAt: best.readyAt,
+      board2InMinutes,
+    },
+    nowMs,
+  );
+}
+
+/** Re-score one physical pair with the same board1 constraint (for refresh / selection). */
+export async function refreshCandidateTiming(params: {
+  boarding?: BoardingInput;
+  origin?: { lat: number; long: number };
+  leg1: RouteRef;
+  leg2: RouteRef;
+  alight1StopId: string;
+  alight1Seq: number;
+  board2StopId: string;
+  board2Seq: number;
+  bufferMinutes?: number;
+  preferredBoard1Eta?: string | null;
+  nowMs?: number;
+}): Promise<{
+  board1Context: Board1Context;
+  candidate: TransferCandidate;
+  generatedAt: string;
+}> {
+  const nowMs = params.nowMs ?? Date.now();
+  const bufferMinutes = Math.max(0, params.bufferMinutes ?? 1);
+  const boarding = normalizeBoardingInput(params);
+  const board1Context = await resolveBoard1Context({
+    boarding,
+    leg1: params.leg1,
+    bufferMinutes,
+    preferredBoard1Eta: params.preferredBoard1Eta,
+    nowMs,
+  });
+
+  const stops2 = await listRouteStops(
+    params.leg2.co,
+    params.leg2.route,
+    params.leg2.bound,
+    params.leg2.serviceType,
+  );
+
+  const alight1 =
+    board1Context.stops1.find(
+      (s) => s.stopId === params.alight1StopId && s.seq === params.alight1Seq,
+    ) ??
+    board1Context.stops1.find((s) => s.stopId === params.alight1StopId);
+  const board2 =
+    stops2.find((s) => s.stopId === params.board2StopId && s.seq === params.board2Seq) ??
+    stops2.find((s) => s.stopId === params.board2StopId);
+
+  if (!alight1 || !board2) {
+    throw new Error("轉車站唔屬於所選路線／方向");
+  }
+  if (alight1.seq <= board1Context.board1.seq) {
+    throw new Error("落車站必須喺第一程上車站之後");
+  }
+  if (!alight1.hasValidCoord || !board2.hasValidCoord) {
+    throw new Error("轉車站座標無效");
+  }
+
+  const meters = distanceMeters(alight1, board2);
+  if (!Number.isFinite(meters)) throw new Error("無法計算轉車距離");
+  const pair: PhysicalPair = {
+    alight1,
+    board2,
+    walkMeters: Math.round(meters),
+    walkMinutes: estimateWalkMinutes(alight1, board2),
+  };
+
+  const candidate = await scoreCandidate({
+    leg1: params.leg1,
+    leg2: params.leg2,
+    pair,
+    bufferMinutes,
+    board1: board1Context.board1,
+    board1Eta: board1Context.board1.boardEta,
+    board1TimingStatus: board1Context.board1TimingStatus,
+    nowMs,
+  });
+
+  return {
+    board1Context: {
+      board1: board1Context.board1,
+      board1Departures: board1Context.board1Departures,
+      board1EtaSource: board1Context.board1EtaSource,
+      board1TimingStatus: board1Context.board1TimingStatus,
+      board1TimingStatusTc: board1Context.board1TimingStatusTc,
+    },
+    candidate,
+    generatedAt: new Date(nowMs).toISOString(),
+  };
+}
+
+const FASTEST_EVAL_CAP = 24;
+
+export async function planTransfer(params: {
+  boarding?: BoardingInput;
+  origin?: { lat: number; long: number };
+  leg1: RouteRef;
+  leg2: RouteRef;
+  mode: PlanMode;
+  maxTransferMeters?: number;
+  bufferMinutes?: number;
+  limit?: number;
+  preferredBoard1Eta?: string | null;
+  nowMs?: number;
+}): Promise<TransferPlanResult> {
+  const maxTransferMeters = Math.min(Math.max(params.maxTransferMeters ?? 450, 80), 1200);
+  const bufferMinutes = Math.max(0, params.bufferMinutes ?? 1);
+  const limit = Math.min(Math.max(params.limit ?? 8, 1), 20);
+  const nowMs = params.nowMs ?? Date.now();
+  const generatedAt = new Date(nowMs).toISOString();
+  const boarding = normalizeBoardingInput(params);
+
+  const [{ stops1, board1, board1Departures, board1EtaSource, board1TimingStatus, board1TimingStatusTc }, stops2] =
+    await Promise.all([
+      resolveBoard1Context({
+        boarding,
+        leg1: params.leg1,
+        bufferMinutes,
+        preferredBoard1Eta: params.preferredBoard1Eta,
+        nowMs,
+      }),
+      listRouteStops(params.leg2.co, params.leg2.route, params.leg2.bound, params.leg2.serviceType),
+    ]);
+
+  if (!stops2.length) throw new Error("第二程未有車站資料");
+
+  const board1Eta = board1.boardEta;
+  const tripLabel =
+    board1EtaSource === "manual" ? "你揀嘅班次" : board1EtaSource === "auto" ? "自動班次" : "未定班次";
+
+  const pairs = buildPairs(stops1, stops2, board1.seq, maxTransferMeters, params.mode);
+  if (!pairs.length) {
+    return {
+      mode: params.mode,
+      board1,
+      board1Departures,
+      board1EtaSource,
+      board1TimingStatus,
+      board1TimingStatusTc,
+      candidates: [],
+      summaryTc: `第一程上車站係「${board1.nameTc}」，但兩程喺 ${maxTransferMeters}m 內搵唔到可步行轉乘站（直線距離）。可改人手選擇或加大步行範圍。`,
+      searchTruncated: false,
+      searchNoteTc: null,
+      generatedAt,
+    };
+  }
+
+  const scoreOne = (p: PhysicalPair) =>
+    scoreCandidate({
+      leg1: params.leg1,
+      leg2: params.leg2,
+      pair: p,
+      bufferMinutes,
+      board1,
+      board1Eta,
+      board1TimingStatus,
+      nowMs,
+    });
+
+  if (params.mode === "shortest_walk" || params.mode === "manual") {
+    const top = pairs.slice(0, limit);
+    const scored = await mapPool(top, 6, scoreOne);
+    const summaryTc =
+      params.mode === "manual"
+        ? `已列出 ${scored.length} 個可揀轉乘站（由近至遠，含未有 ETA 嘅選項）。${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。${WALK_CAVEAT_TC}`
+        : `最少步行：最近轉乘約 ${scored[0].walkMeters}m。${tripLabel}第一程上車 ${fmtHkHm(board1Eta)}。時間狀態：${scored[0].timingStatusTc}`;
+    return {
+      mode: params.mode,
+      board1,
+      board1Departures,
+      board1EtaSource,
+      board1TimingStatus,
+      board1TimingStatusTc,
+      candidates: scored,
+      summaryTc,
+      searchTruncated: pairs.length > limit,
+      searchNoteTc:
+        pairs.length > limit
+          ? `結果限於已評估嘅 ${limit} 個較近轉車站，唔係全局最優。`
+          : null,
+      generatedAt,
+    };
+  }
+
+  // fastest = earliest estimated second-bus boarding among evaluated candidates
+  const evalCap = Math.min(FASTEST_EVAL_CAP, pairs.length);
+  const shortlist = pairs.slice(0, evalCap);
+  const searchTruncated = pairs.length > evalCap;
+  const scored = await mapPool(shortlist, 6, scoreOne);
+
+  const timed = scored.filter((c) => c.timingStatus === "eta_matched" && c.leg2Eta);
+  const unknown = scored.filter((c) => c.timingStatus !== "eta_matched");
+
+  timed.sort((a, b) => {
+    const aBoard = a.leg2Eta ? parseEtaMs(a.leg2Eta) : Infinity;
+    const bBoard = b.leg2Eta ? parseEtaMs(b.leg2Eta) : Infinity;
+    if (aBoard !== bBoard) return aBoard - bBoard;
+    return a.walkMeters - b.walkMeters;
+  });
+  unknown.sort((a, b) => a.walkMeters - b.walkMeters);
+
+  const ranked = [...timed, ...unknown].slice(0, limit);
+  const bestTimed = timed[0] ?? null;
+
+  let summaryTc: string;
+  if (bestTimed && board1Eta && bestTimed.leg1Eta && bestTimed.leg2Eta && board1TimingStatus === "ok") {
+    const walkBit =
+      board1.walkMinutesFromOrigin != null
+        ? `行去「${board1.nameTc}」約 ${board1.walkMinutesFromOrigin} 分，`
+        : board1.minutesToBoardStop != null
+          ? `約 ${board1.minutesToBoardStop} 分後到「${board1.nameTc}」，`
+          : `喺「${board1.nameTc}」`;
+    summaryTc = `最早第二程上車（${tripLabel}，估算）：${walkBit}${fmtHkHm(board1Eta)} 上第一程 → ${fmtHkHm(bestTimed.leg1Eta)} 喺「${bestTimed.alight1.nameTc}」落 → 步行約 ${bestTimed.walkMeters}m → 約 ${fmtHkHm(bestTimed.leg2Eta)} 上第二程。呢個係最早上車，唔係終點到達時間。`;
+  } else if (!timed.length) {
+    summaryTc = `暫未能比較最快方案，先列出較少步行轉車站。${board1TimingStatusTc}。${WALK_CAVEAT_TC}`;
+  } else {
+    summaryTc = `${tripLabel}第一程 ${fmtHkHm(board1Eta)} 喺「${board1.nameTc}」；部分轉車站有可見時間估算。`;
+  }
+
+  return {
+    mode: "fastest",
+    board1,
+    board1Departures,
+    board1EtaSource,
+    board1TimingStatus,
+    board1TimingStatusTc,
+    candidates: ranked,
+    summaryTc,
+    searchTruncated,
+    searchNoteTc: searchTruncated
+      ? `最快模式只評估 ${evalCap} 個較近轉乘組合（共 ${pairs.length}），唔保證全局最早。`
+      : null,
+    generatedAt,
+  };
+}
