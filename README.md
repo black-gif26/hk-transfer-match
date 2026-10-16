@@ -35,7 +35,7 @@
 
 ## ETA 限制
 
-- 公開 KMB／Citybus ETA 沒有穩定跨站 trip／vehicle id；唔會当成已核實「同一架車」。
+- 公開 KMB／Citybus ETA 沒有穩定跨站 trip／vehicle id；唔會當成已核實「同一架車」。
 - `eta_matched` = 可見時間喺假設下兼容，唔係保證轉乘。
 - 落車時間可能用站距啟發式過濾過早 ETA，並標明 `estimated_unverified`。
 - 轉車距離係直線估算，唔代表實際可行人路。
