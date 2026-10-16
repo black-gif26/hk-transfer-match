@@ -386,3 +386,22 @@ async function loadRoutes(leg) {
     if (!routes.length) {
       clearSelect(select, "搵唔到路線", true);
       refreshSticky();
+      return;
+    }
+    fillSelectOptions(select, routes, (r) => ({
+      value: JSON.stringify({
+        co: r.co,
+        route: r.route,
+        bound: r.bound,
+        serviceType: r.serviceType,
+      }),
+      label: r.labelTc,
+    }));
+    select.disabled = false;
+    clearPlanDependentState();
+    await loadStops(leg);
+    if (leg === 1) await refreshBoard1Departures();
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    if (gen !== gens[genKey]) return;
+    clearSelect(sele
