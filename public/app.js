@@ -404,4 +404,151 @@ async function loadRoutes(leg) {
   } catch (err) {
     if (err.name === "AbortError") return;
     if (gen !== gens[genKey]) return;
-    clearSelect(sele
+    clearSelect(select, "載入失敗", true);
+    showOutputError(err.message);
+  }
+  refreshSticky();
+}
+
+function renderBoard1Departures(payload) {
+  state.board1 = payload.board1;
+  state.board1Departures = payload.board1Departures || [];
+  state.board1TimingStatus = payload.board1TimingStatus || null;
+  state.board1TimingStatusTc = payload.board1TimingStatusTc || null;
+  const select = $("board1Eta");
+  const wrap = $("board1SelectWrap");
+  const refreshBtn = $("refreshBoard1Btn");
+
+  $("board1Hint").textContent = payload.noteTc || "揀第一程上車班次。";
+  refreshBtn.hidden = false;
+
+  if (!state.board1Departures.length) {
+    clearSelect(select, "暫時未有 ETA", true);
+    wrap.hidden = board1Mode() !== "manual";
+    return;
+  }
+
+  const autoEta = payload.board1?.boardEta;
+  fillSelectOptions(select, state.board1Departures, (d) => ({
+    value: d.eta,
+    label: `${d.labelTc}${autoEta === d.eta ? "（自動建議）" : ""}`,
+    selected: autoEta === d.eta,
+  }));
+  select.disabled = false;
+  if (autoEta) select.value = autoEta;
+  wrap.hidden = board1Mode() !== "manual";
+}
+
+async function refreshBoard1Departures() {
+  const leg1 = parseRouteValue($("route1").value);
+  if (!leg1) {
+    $("board1Hint").textContent = "先揀第一程路線同方向。";
+    $("board1SelectWrap").hidden = true;
+    $("refreshBoard1Btn").hidden = true;
+    return;
+  }
+  const boarding = boardingPayload();
+  if (boarding.boardingMode === "location" && !boarding.origin) {
+    $("board1Hint").textContent = "可用目前位置，或改用自行選擇上車站後再更新班次。";
+    return;
+  }
+  if (boarding.boardingMode === "manual_stop" && !boarding.boardStopId) {
+    $("board1Hint").textContent = "先揀第一程上車站，再更新班次。";
+    return;
+  }
+
+  const gen = ++gens.board1;
+  const ac = abortAndStart("board1");
+  const snapPreferred = preferredBoard1Eta();
+  $("board1Hint").textContent = "更新緊第一程班次…";
+  try {
+    const data = await api("/api/board1-departures", {
+      method: "POST",
+      signal: ac.signal,
+      body: JSON.stringify({
+        ...boarding,
+        leg1,
+        bufferMinutes: Number($("bufferMinutes").value || 1),
+        preferredBoard1Eta: snapPreferred,
+      }),
+    });
+    if (gen !== gens.board1) return;
+    if (!sameRoute(leg1, parseRouteValue($("route1").value))) return;
+    renderBoard1Departures(data);
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    if (gen !== gens.board1) return;
+    $("board1Hint").textContent = err.message;
+  }
+  refreshSticky();
+}
+
+function fillBoardStopSelect(stops, preferred = null) {
+  const select = $("boardStop1");
+  if (!select) return;
+  select.replaceChildren();
+  if (!stops?.length) {
+    select.append(new Option("未有車站", ""));
+    select.disabled = true;
+    return;
+  }
+  select.append(new Option("揀上車站", ""));
+  for (const s of stops) {
+    const value = JSON.stringify({ stopId: s.stopId, seq: s.seq });
+    select.append(new Option(`${s.seq}. ${s.nameTc}`, value));
+  }
+  select.disabled = false;
+  if (preferred) {
+    const match =
+      stops.find(
+        (s) =>
+          s.stopId === preferred.stopId &&
+          (preferred.seq == null || s.seq === preferred.seq),
+      ) || stops.find((s) => s.stopId === preferred.stopId);
+    if (match) {
+      select.value = JSON.stringify({ stopId: match.stopId, seq: match.seq });
+    }
+  }
+}
+
+async function loadStops(leg, preferred = null) {
+  const route = parseRouteValue($(`route${leg}`).value);
+  const stopSelect = $(`stop${leg}`);
+  const genKey = `stops${leg}`;
+  const gen = ++gens[genKey];
+  const ac = abortAndStart(genKey);
+
+  if (!route) {
+    clearSelect(stopSelect, null, true);
+    syncVisibleStops(leg);
+    return;
+  }
+
+  stopSelect.disabled = true;
+  const params = new URLSearchParams({
+    co: route.co,
+    route: route.route,
+    bound: route.bound,
+    serviceType: route.serviceType,
+  });
+
+  try {
+    const { stops } = await api(`/api/stops?${params}`, { signal: ac.signal });
+    if (gen !== gens[genKey]) return;
+    if (!sameRoute(route, parseRouteValue($(`route${leg}`).value))) return;
+    state[leg].stops = stops;
+    stopSelect.replaceChildren();
+    for (const s of stops) {
+      const value = JSON.stringify({ stopId: s.stopId, seq: s.seq });
+      const opt = new Option(`${s.seq}. ${s.nameTc}`, value);
+      stopSelect.append(opt);
+    }
+    stopSelect.disabled = !stops.length;
+    if (preferred) {
+      const match =
+        stops.find(
+          (s) =>
+            s.stopId === preferred.stopId &&
+            (preferred.seq == null || s.seq === preferred.seq),
+        ) || stops.find((s) => s.stopId === preferred.stopId);
+      
