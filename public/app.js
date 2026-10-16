@@ -142,4 +142,111 @@ function minutesToBoardStopValue() {
 function boardingPayload() {
   const mode = boardingInputMode();
   if (mode === "manual_stop") {
- 
+    const stop = selectedBoardStop();
+    return {
+      boardingMode: "manual_stop",
+      boardStopId: stop?.stopId ?? null,
+      boardStopSeq: stop?.seq ?? null,
+      minutesToBoardStop: minutesToBoardStopValue(),
+    };
+  }
+  return {
+    boardingMode: "location",
+    origin: state.origin ? { ...state.origin } : null,
+  };
+}
+
+function syncBoardingPanels() {
+  const mode = boardingInputMode();
+  const loc = mode === "location";
+  $("locationPanel").hidden = !loc;
+  $("manualBoardPanel").hidden = loc;
+}
+
+function clearPlanDependentState(reason) {
+  state.plan = null;
+  state.selectedCandidateIndex = null;
+  state.timingStale = false;
+  state.timingError = null;
+  state.lastTimingUpdatedAt = null;
+  const box = $("output");
+  if (reason) {
+    box.replaceChildren(el("div", { className: "hint", text: reason }));
+  } else {
+    box.replaceChildren();
+  }
+}
+
+function setStep(n) {
+  document.querySelectorAll(".step").forEach((elStep) => {
+    const s = Number(elStep.dataset.step);
+    elStep.classList.toggle("is-current", s === n);
+    elStep.classList.toggle("is-done", s < n);
+  });
+  const hasRoute1 = !!parseRouteValue($("route1").value);
+  const boardingReady =
+    boardingInputMode() === "manual_stop"
+      ? !!selectedBoardStop()
+      : !!state.origin;
+  $("cardOrigin").classList.toggle("is-ready", boardingReady);
+  $("cardRoutes").classList.toggle("is-dim", false);
+  $("cardRoutes").classList.toggle("is-ready", true);
+  $("cardBoard1").classList.toggle("is-dim", !hasRoute1);
+  $("cardBoard1").classList.toggle("is-ready", hasRoute1);
+  $("cardPlan").classList.toggle("is-dim", !canPlan());
+  $("cardPlan").classList.toggle("is-ready", canPlan());
+}
+
+function canPlan() {
+  const stop = selectedBoardStop();
+  return canPlanWith({
+    boardingMode: boardingInputMode(),
+    origin: state.origin,
+    boardStopId: stop?.stopId ?? null,
+    boardStopSeq: stop?.seq ?? null,
+    leg1: parseRouteValue($("route1").value),
+    leg2: parseRouteValue($("route2").value),
+  });
+}
+
+function refreshSticky() {
+  const btn = $("planBtn");
+  const hasRoutes =
+    !!parseRouteValue($("route1").value) && !!parseRouteValue($("route2").value);
+  const mode = boardingInputMode();
+
+  if (!hasRoutes) {
+    $("stickyHint").textContent = "先揀兩程路線同方向";
+    btn.disabled = true;
+    btn.textContent = "開始�textContent = "先揀兩程路線同方向";
+    btn.disabled = true;
+    btn.textContent = "開始搵轉乘";
+    setStep(2);
+    return;
+  }
+
+  if (mode === "location" && !state.origin) {
+    $("stickyHint").textContent = "可用目前位置，或改用自行選擇上車站";
+    btn.disabled = true;
+    btn.textContent = "開始搵轉乘";
+    setStep(1);
+    return;
+  }
+
+  if (mode === "manual_stop" && !selectedBoardStop()) {
+    $("stickyHint").textContent = "再揀第一程上車站";
+    btn.disabled = true;
+    btn.textContent = "開始搵轉乘";
+    setStep(1);
+    return;
+  }
+
+  $("stickyHint").textContent = "可以開始搵轉乘建議";
+  btn.disabled = false;
+  btn.textContent = "開始搵轉乘";
+  setStep(3);
+}
+
+/** Safe element helper — never interpolates untrusted strings into HTML. */
+function el(tag, opts = {}, children = []) {
+  const node = document.create
