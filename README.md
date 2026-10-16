@@ -31,9 +31,7 @@
 | `preferred_gone` | 人手揀嘅班次已唔喺可見列表（唔會默默換車） |
 | `upstream_error` | 班次資料暫時無法讀取 |
 
-`hasMatch` 只係 `timingStatus === "eta_matched"` �_error` | 班次資料暫時無法讀取 |
-
-`hasMatch` 只係 `timingStatus === "eta_matched"` 嘅狹義兼容旗標，唔代表物理可行性。
+`hasMatch` 只係 `timingStatus === "eta_matched"` 嘅窄義兼容旗標，唔代表物理可行性。
 
 ## ETA 限制
 
@@ -41,6 +39,7 @@
 - `eta_matched` = 可見時間喺假設下兼容，唔係保證轉乘。
 - 落車時間可能用站距啟發式過濾過早 ETA，並標明 `estimated_unverified`。
 - 轉車距離係直線估算，唔代表實際可行人路。
+- 唔會發明第二程開出時間；唔會用未驗證�人路。
 - 唔會發明第二程開出時間；唔會用未驗證嘅班距／時間表估算冒充即時 ETA。
 
 ## 模式
