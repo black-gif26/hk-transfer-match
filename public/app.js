@@ -1,1 +1,1 @@
-file:///agent/hk-transfer-match/public/app.js
+PLACEHOLDER_REPLACE_WITH_FULL
