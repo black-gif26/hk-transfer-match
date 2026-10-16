@@ -1,1 +1,1 @@
-PLACEHOLDER_LOAD_FROM_/tmp/push-full-app.json
+__CURSOR_FILE__:/tmp/FULL_APP.js
