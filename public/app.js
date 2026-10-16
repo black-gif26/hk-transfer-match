@@ -52,7 +52,7 @@ const $ = (id) => document.getElementById(id);
 const MODE_HINTS = {
   shortest_walk: "優先轉車兩站直線距離最短（唔代表可行人路）。",
   fastest: "由出發地計到第二程最早上車時間（唔係終點到達）。",
-  manual: "列出可撳站，你自己決定；可開進階睇附近站。",
+  manual: "列出可揀站，你自己決定；可開進階睇附近站。",
 };
 
 function debounce(fn, ms) {
