@@ -1,1 +1,1 @@
-@/agent/hk-transfer-match/public/app.js
+file:///agent/hk-transfer-match/public/app.js
