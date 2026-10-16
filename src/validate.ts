@@ -166,7 +166,8 @@ export function parseBoardingInput(body: Record<string, unknown>): ParsedBoardin
   let mode: BoardingMode;
   if (modeRaw === "location" || modeRaw === "manual_stop") {
     mode = modeRaw;
-  } else if (modeRaw === null || modeRaw === "") {
+  } else if (modeRaw == null || modeRaw === "") {
+    // Backward-compatible default: origin object ⇒ location mode.
     mode = body.origin != null ? "location" : "manual_stop";
   } else {
     throw new ValidationError("boardingMode 只可以係 location 或 manual_stop");
