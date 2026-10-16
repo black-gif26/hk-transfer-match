@@ -17,9 +17,9 @@
     <main class="shell">
       <header class="hero">
         <div class="brand">駁車<span>時</span></div>
-        <p class="tagline">三步搞掂：定位 → 揀兩程車 → 睇轉乘建議。</p>
+        <p class="tagline">揀兩程車，再用位置或人手上車站搵轉乘建議。</p>
         <ol class="steps" id="steps">
-          <li class="step is-current" data-step="1"><span>1</span>出發</li>
+          <li class="step is-current" data-step="1"><span>1</span>上車</li>
           <li class="step" data-step="2"><span>2</span>路線</li>
           <li class="step" data-step="3"><span>3</span>轉乘</li>
         </ol>
@@ -30,14 +30,47 @@
         <section class="flow-card" id="cardOrigin">
           <div class="flow-card-head">
             <p class="step-kicker">第 1 步</p>
-            <h2>你而家喺邊？</h2>
+            <h2>點樣定第一程上車站？</h2>
           </div>
-          <button class="cta locate" id="locateBtn" type="button">分享位置開始</button>
-          <p class="status" id="originStatus">未定位。撳上面掣授權位置。</p>
+          <div class="seg" role="radiogroup" aria-label="上車輸入方式">
+            <label class="seg-item">
+              <input type="radio" name="boardingInputMode" value="manual_stop" checked />
+              <span>自行選擇上車站</span>
+            </label>
+            <label class="seg-item">
+              <input type="radio" name="boardingInputMode" value="location" />
+              <span>使用目前位置（可選）</span>
+            </label>
+          </div>
+
+          <div id="locationPanel" hidden>
+            <button class="cta locate" id="locateBtn" type="button">使用目前位置</button>
+            <p class="status" id="originStatus">定位可選。失敗時可改用「自行選擇上車站」。</p>
+          </div>
+
+          <div id="manualBoardPanel">
+            <p class="hint" id="manualBoardHint">先揀第一程路線同方向，再揀上車站。</p>
+            <div class="field">
+              <label for="boardStop1">第一程上車站</label>
+              <select id="boardStop1" disabled>
+                <option value="">先揀第一程路線</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="minutesToBoardStop">幾分鐘後到上車站（可選）</label>
+              <input
+                id="minutesToBoardStop"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="唔填則趕得切未核實"
+              />
+            </div>
+          </div>
         </section>
 
         <!-- Step 2 -->
-        <section class="flow-card is-dim" id="cardRoutes">
+        <section class="flow-card" id="cardRoutes">
           <div class="flow-card-head">
             <p class="step-kicker">第 2 步</p>
             <h2>搭邊兩程？</h2>
@@ -101,7 +134,7 @@
             <p class="step-kicker">第 2b 步</p>
             <h2>第一程上邊班？</h2>
           </div>
-          <p class="hint" id="board1Hint">定位並揀好第一程路線後，會顯示可揀班次。</p>
+          <p class="hint" id="board1Hint">揀好第一程路線同上車站後，會顯示可揀班次。</p>
           <div class="seg" role="radiogroup" aria-label="第一程班次方式">
             <label class="seg-item">
               <input type="radio" name="board1Mode" value="auto" checked />
@@ -181,15 +214,18 @@
           </div>
         </details>
 
-        <p class="meta">資料：DATA.GOV.HK（KMB / Citybus）。轉乘建議暫時以九巴站座標為主。</p>
+        <p class="meta">
+          資料：DATA.GOV.HK（KMB / Citybus）。轉車距離為直線估算；公開 ETA 未提供跨站車輛識別，時間兼容唔等於保證轉乘。
+        </p>
       </section>
     </main>
 
     <div class="sticky-bar">
-      <p class="sticky-hint" id="stickyHint">先分享位置</p>
+      <p class="sticky-hint" id="stickyHint">揀上車方式同兩程路線</p>
+      <button class="cta" id="planBtn" type="button" disabled>開始�Hint">揀上車方式同兩程路線</p>
       <button class="cta" id="planBtn" type="button" disabled>開始搵轉乘</button>
     </div>
 
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=0.3.1"></script>
   </body>
 </html>
