@@ -1,1 +1,1 @@
-PLACEHOLDER_LOAD_FROM_/tmp/create-full-app.json
+PLACEHOLDER_LOAD_FROM_/tmp/push-full-app.json
