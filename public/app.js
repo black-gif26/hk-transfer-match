@@ -218,8 +218,6 @@ function refreshSticky() {
   if (!hasRoutes) {
     $("stickyHint").textContent = "先揀兩程路線同方向";
     btn.disabled = true;
-    btn.textContent = "開始�textContent = "先揀兩程路線同方向";
-    btn.disabled = true;
     btn.textContent = "開始搵轉乘";
     setStep(2);
     return;
@@ -249,4 +247,73 @@ function refreshSticky() {
 
 /** Safe element helper — never interpolates untrusted strings into HTML. */
 function el(tag, opts = {}, children = []) {
-  const node = document.create
+  const node = document.createElement(tag);
+  if (opts.className) node.className = opts.className;
+  if (opts.id) node.id = opts.id;
+  if (opts.text != null) node.textContent = opts.text;
+  if (opts.html != null) node.innerHTML = opts.html; // only for static trusted fragments
+  if (opts.title) node.title = opts.title;
+  if (opts.attrs) {
+    for (const [k, v] of Object.entries(opts.attrs)) {
+      if (v == null) continue;
+      node.setAttribute(k, String(v));
+    }
+  }
+  if (opts.on) {
+    for (const [ev, fn] of Object.entries(opts.on)) {
+      node.addEventListener(ev, fn);
+    }
+  }
+  for (const child of children) {
+    if (child == null) continue;
+    node.append(typeof child === "string" ? document.createTextNode(child) : child);
+  }
+  return node;
+}
+
+function clearSelect(select, placeholder, disabled = true) {
+  select.replaceChildren();
+  if (placeholder != null) {
+    const opt = new Option(placeholder, "");
+    select.append(opt);
+  }
+  select.disabled = disabled;
+}
+
+function fillSelectOptions(select, items, toOption) {
+  select.replaceChildren();
+  for (const item of items) {
+    const { value, label, selected } = toOption(item);
+    const opt = new Option(label, value);
+    if (selected) opt.selected = true;
+    select.append(opt);
+  }
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    headers: {
+      Accept: "application/json",
+      ...(options?.body ? { "Content-Type": "application/json" } : {}),
+    },
+    ...options,
+  });
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(`請求失敗 ${res.status}`);
+  }
+  if (!res.ok) throw new Error(data.error || `請求失敗 ${res.status}`);
+  return data;
+}
+
+function syncVisibleStops(leg) {
+  const hidden = $(`stop${leg}`);
+  const visible = $(`stop${leg}Visible`);
+  visible.replaceChildren();
+  for (const opt of hidden.options) {
+    visible.append(new Option(opt.textContent, opt.value, false, opt.selected));
+  }
+  visible.disabled = hidden.disabled || !hidden.options.length;
+  visible.value
