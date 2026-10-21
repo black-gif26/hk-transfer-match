@@ -1,0 +1,10 @@
+{
+  "name": "ucl-predictions",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy --temporary"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.3"
+  }
+}
