@@ -7,6 +7,7 @@ from datetime import date
 
 from ucl_pipeline.dedupe import dedupe
 from ucl_pipeline.predict import (
+    compare_windows,
     format_message,
     outcome_probs,
     predict_fixture,
@@ -93,6 +94,8 @@ class NormalizeTests(unittest.TestCase):
     def test_aliases_and_season(self):
         self.assertEqual(normalize_team("Manchester City (ENG)"), "Manchester City FC")
         self.assertEqual(normalize_team("SL Benfica"), "Sport Lisboa e Benfica")
+        self.assertEqual(normalize_team("AZ Alkmaar"), "AZ")
+        self.assertEqual(normalize_team("NEC Nijmegen"), "NEC")
         self.assertEqual(season_key("2024/2025"), "2024-25")
         self.assertEqual(normalize_team("Paris FC"), "Paris FC")
 
@@ -247,6 +250,41 @@ class PredictTests(unittest.TestCase):
         ]
         kept = usable_history(matches, 2, date(2026, 10, 21))
         self.assertEqual({(match.season, match.away_team) for match in kept}, {("2024-25", "B"), ("2026-27", "C")})
+
+    def test_europa_league_uses_champions_league_home_edge_when_it_has_no_history(self):
+        history = []
+        for index in range(12):
+            history.append(
+                Match(
+                    date(2025, 9, 1 + index),
+                    "2025-26",
+                    "UEFA Champions League",
+                    "",
+                    "Home Side",
+                    "Away Side",
+                    2,
+                    0,
+                    "x",
+                    1,
+                )
+            )
+        fixture = Match(
+            date(2026, 10, 22),
+            "2026-27",
+            "UEFA Europa League",
+            "League phase Matchday 3",
+            "Home Side",
+            "Away Side",
+            None,
+            None,
+            "uefa.com",
+            9,
+            kickoff="00:45 HK",
+        )
+        rows = [row for row in compare_windows(history, [fixture]) if row["train_window"] == 5 and row["form_n"] == 10]
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["p_home"], "")
+        self.assertIn("home_edge_from_champions_league", rows[0]["note"])
 
     def test_message_states_when_no_fixture_exists(self):
         text = format_message(date(2026, 10, 21), [], ["checked"])

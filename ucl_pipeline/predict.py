@@ -249,8 +249,14 @@ def compare_windows(history: list[Match], fixtures: list[Match]) -> list[dict]:
             feature = build_features(scoped, [fixture])[0]
             feature["kickoff"] = fixture.kickoff
             edge = league_edge(scoped, fixture.competition, seasons)
+            edge_note = ""
+            if edge is None and fixture.competition == "UEFA Europa League":
+                edge = league_edge(scoped, "UEFA Champions League", seasons)
+                edge_note = "home_edge_from_champions_league"
             for form_n in FORM_LENGTHS:
                 row = predict_fixture(feature, edge, form_n=form_n)
+                if edge_note:
+                    row["note"] = ";".join(part for part in (row["note"], edge_note) if part)
                 row["train_window"] = window
                 row["train_seasons"] = ",".join(seasons)
                 rows.append(row)

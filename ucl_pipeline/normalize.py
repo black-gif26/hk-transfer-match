@@ -9,7 +9,14 @@ import unicodedata
 # Only pairs confirmed while inspecting 2021-22..2025-26 files. Longer 2024-25
 # spellings are the canonical form. Distinct clubs are not folded together.
 TEAM_ALIASES = {
+    "AZ Alkmaar": "AZ",
     "AS Monaco": "AS Monaco FC",
+    "Bayer Leverkusen": "Bayer 04 Leverkusen",
+    "Dinamo Zagreb": "GNK Dinamo Zagreb",
+    "NEC Nijmegen": "NEC",
+    "PAE Olympiakos SFP": "Olympiakos Piraeus",
+    "Royale Union Saint-Gilloise": "Union Saint-Gilloise",
+    "Stade Rennais": "Stade Rennais FC 1901",
     "Atalanta": "Atalanta BC",
     "Atlético Madrid": "Club Atlético de Madrid",
     "Bayern München": "FC Bayern München",
