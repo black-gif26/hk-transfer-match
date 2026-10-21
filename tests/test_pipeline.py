@@ -6,7 +6,13 @@ import unittest
 from datetime import date
 
 from ucl_pipeline.dedupe import dedupe
-from ucl_pipeline.predict import format_message, outcome_probs, predict_fixture
+from ucl_pipeline.predict import (
+    format_message,
+    outcome_probs,
+    predict_fixture,
+    training_seasons,
+    usable_history,
+)
 from ucl_pipeline.telegram import credentials_from_env
 from ucl_pipeline.fbtxt import parse_champions_league_text, parse_fb_date
 from ucl_pipeline.features import build_features
@@ -187,6 +193,7 @@ class FeatureTests(unittest.TestCase):
         self.assertEqual(second["home_last5_w"], 3)
         self.assertEqual(second["home_rest_days"], 12)
         self.assertEqual(second["home_insufficient_history"], 1)
+        self.assertEqual(second["home_last20_gf"], 8)
 
 
 class PredictTests(unittest.TestCase):
@@ -215,6 +222,20 @@ class PredictTests(unittest.TestCase):
         self.assertEqual(row["low_confidence"], 1)
         self.assertIn(row["pick"], {"home", "draw", "away"})
         self.assertAlmostEqual(float(row["p_home"]) + float(row["p_draw"]) + float(row["p_away"]), 1.0, places=2)
+
+    def test_windows_use_latest_complete_seasons_and_drop_future_updates(self):
+        self.assertEqual(training_seasons(2), ("2024-25", "2025-26"))
+        self.assertEqual(training_seasons(3), ("2023-24", "2024-25", "2025-26"))
+        self.assertEqual(training_seasons(5)[0], "2021-22")
+        matches = [
+            Match(date(2024, 5, 1), "2023-24", "UEFA Champions League", "", "A", "B", 1, 0, "x", 1),
+            Match(date(2025, 5, 1), "2024-25", "UEFA Champions League", "", "A", "B", 2, 0, "x", 1),
+            Match(date(2026, 10, 20), "2026-27", "La Liga", "", "A", "C", 1, 0, "x", 2),
+            Match(date(2026, 10, 21), "2026-27", "La Liga", "", "A", "D", 3, 0, "x", 2),
+            Match(date(2022, 5, 1), "2021-22", "UEFA Champions League", "", "A", "E", 1, 1, "x", 1),
+        ]
+        kept = usable_history(matches, 2, date(2026, 10, 21))
+        self.assertEqual({(match.season, match.away_team) for match in kept}, {("2024-25", "B"), ("2026-27", "C")})
 
     def test_message_states_when_no_fixture_exists(self):
         text = format_message(date(2026, 10, 21), [], ["checked"])

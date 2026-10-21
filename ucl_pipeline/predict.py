@@ -18,7 +18,14 @@ from ucl_pipeline.features import build_features
 from ucl_pipeline.models import Match
 from ucl_pipeline.sources import load_all, load_football_json
 from ucl_pipeline.telegram import credentials_from_env, send_message
+from ucl_pipeline.web_fixtures import web_fixtures_on
 
+# Five complete seasons in the collected training set. 2026-27 is not one of them.
+COMPLETE_SEASONS = ("2021-22", "2022-23", "2023-24", "2024-25", "2025-26")
+TRAIN_WINDOWS = (2, 3, 5)
+FORM_LENGTHS = (5, 10, 20)
+# Played matches from this season may update form only when dated before the fixture.
+UPDATE_SEASON = "2026-27"
 # Season directory that exists in football.json after the pipeline's 2025-26 cutoff.
 # champions-league has no 2026-27 directory (HTTP 404 on inspection).
 FIXTURE_SEASONS = ("2026-27",)
@@ -40,7 +47,28 @@ PREDICTION_FIELDS = [
     "away_prior_n",
     "low_confidence",
     "note",
+    "train_window",
+    "train_seasons",
+    "form_n",
 ]
+
+
+def training_seasons(window: int) -> tuple[str, ...]:
+    if window not in TRAIN_WINDOWS:
+        raise ValueError(f"training window must be one of {TRAIN_WINDOWS}")
+    return COMPLETE_SEASONS[-window:]
+
+
+def usable_history(matches: list[Match], window: int, as_of: date) -> list[Match]:
+    """Training-window matches plus 2026-27 results strictly before as_of."""
+    allowed = set(training_seasons(window))
+    kept: list[Match] = []
+    for match in matches:
+        if match.goals_pair() is None or match.score_ambiguous or match.date >= as_of:
+            continue
+        if match.season in allowed or match.season == UPDATE_SEASON:
+            kept.append(match)
+    return kept
 
 
 def poisson_pmf(k: int, lam: float) -> float:
@@ -73,18 +101,25 @@ def outcome_probs(home_xg: float, away_xg: float, limit: int = 10) -> tuple[floa
     return home_win / total, draw / total, away_win / total
 
 
-def _per_game(total: int, prior_n: int) -> float | None:
-    games = min(10, prior_n)
+def _per_game(total: int, prior_n: int, form_n: int) -> float | None:
+    games = min(form_n, prior_n)
     if games <= 0:
         return None
     return total / games
 
 
-def league_edge(matches: list[Match], competition: str) -> tuple[float, float] | None:
+def league_edge(
+    matches: list[Match],
+    competition: str,
+    seasons: tuple[str, ...] | None = None,
+) -> tuple[float, float] | None:
     scored = [
         match
         for match in matches
-        if match.competition == competition and match.goals_pair() is not None and not match.score_ambiguous
+        if match.competition == competition
+        and match.goals_pair() is not None
+        and not match.score_ambiguous
+        and (seasons is None or match.season in seasons)
     ]
     if not scored:
         return None
@@ -93,13 +128,19 @@ def league_edge(matches: list[Match], competition: str) -> tuple[float, float] |
     return home, away
 
 
-def predict_fixture(feature: dict, edge: tuple[float, float] | None) -> dict:
+def predict_fixture(
+    feature: dict,
+    edge: tuple[float, float] | None,
+    form_n: int = 10,
+) -> dict:
+    if form_n not in FORM_LENGTHS:
+        raise ValueError(f"form length must be one of {FORM_LENGTHS}")
     home_prior = int(feature["home_prior_n"])
     away_prior = int(feature["away_prior_n"])
-    home_for = _per_game(int(feature["home_last10_gf"]), home_prior)
-    home_against = _per_game(int(feature["home_last10_ga"]), home_prior)
-    away_for = _per_game(int(feature["away_last10_gf"]), away_prior)
-    away_against = _per_game(int(feature["away_last10_ga"]), away_prior)
+    home_for = _per_game(int(feature[f"home_last{form_n}_gf"]), home_prior, form_n)
+    home_against = _per_game(int(feature[f"home_last{form_n}_ga"]), home_prior, form_n)
+    away_for = _per_game(int(feature[f"away_last{form_n}_gf"]), away_prior, form_n)
+    away_against = _per_game(int(feature[f"away_last{form_n}_ga"]), away_prior, form_n)
     if home_for is None or away_for is None or home_against is None or away_against is None or edge is None:
         return {
             **_identity(feature),
@@ -109,6 +150,7 @@ def predict_fixture(feature: dict, edge: tuple[float, float] | None) -> dict:
             "p_draw": "",
             "p_away": "",
             "pick": "",
+            "form_n": form_n,
             "home_prior_n": home_prior,
             "away_prior_n": away_prior,
             "low_confidence": 1,
@@ -118,11 +160,11 @@ def predict_fixture(feature: dict, edge: tuple[float, float] | None) -> dict:
     home_xg = max(0.05, (home_for + away_against) / 2 + home_edge)
     away_xg = max(0.05, (away_for + home_against) / 2 - home_edge)
     p_home, p_draw, p_away = outcome_probs(home_xg, away_xg)
-    pick = max(("home", p_home), ("draw", p_draw), ("away", p_away), key=lambda item: item[1])[0]
-    low = home_prior < 5 or away_prior < 5
+    pick = max((("home", p_home), ("draw", p_draw), ("away", p_away)), key=lambda item: item[1])[0]
+    low = home_prior < form_n or away_prior < form_n
     notes: list[str] = []
     if low:
-        notes.append("fewer_than_5_prior_matches")
+        notes.append(f"fewer_than_{form_n}_prior_matches")
     for side in ("home", "away"):
         rest = feature.get(f"{side}_rest_days")
         if rest not in ("", None) and int(rest) > 14:
@@ -136,6 +178,7 @@ def predict_fixture(feature: dict, edge: tuple[float, float] | None) -> dict:
         "p_draw": round(p_draw, 3),
         "p_away": round(p_away, 3),
         "pick": pick,
+        "form_n": form_n,
         "home_prior_n": home_prior,
         "away_prior_n": away_prior,
         "low_confidence": 1 if low else 0,
@@ -155,6 +198,24 @@ def _identity(feature: dict) -> dict:
     }
 
 
+def compare_windows(history: list[Match], fixtures: list[Match]) -> list[dict]:
+    """One row per fixture, training window, and form length. Each row has three probabilities."""
+    rows: list[dict] = []
+    for window in TRAIN_WINDOWS:
+        seasons = training_seasons(window)
+        for fixture in fixtures:
+            scoped = usable_history(history, window, fixture.date)
+            feature = build_features(scoped, [fixture])[0]
+            feature["kickoff"] = fixture.kickoff
+            edge = league_edge(scoped, fixture.competition, seasons)
+            for form_n in FORM_LENGTHS:
+                row = predict_fixture(feature, edge, form_n=form_n)
+                row["train_window"] = window
+                row["train_seasons"] = ",".join(seasons)
+                rows.append(row)
+    return rows
+
+
 def format_message(on: date, rows: list[dict], coverage_notes: list[str]) -> str:
     lines = [f"{on.isoformat()} 聯賽預測（賽前近況計算，不是已訓練模型）", ""]
     if not rows:
@@ -163,27 +224,34 @@ def format_message(on: date, rows: list[dict], coverage_notes: list[str]) -> str
         kick = f"{row['kickoff']} " if row.get("kickoff") else ""
         lines.append(f"{row['competition']} {row['stage']}".strip())
         lines.append(f"{kick}{row['home_team']} vs {row['away_team']}")
-        if row["pick"] == "":
-            lines.append("無法計算：賽前紀錄不足。")
+        if row.get("train_window"):
+            lines.append(f"訓練視窗 {row['train_window']} 季，近 {row['form_n']} 場")
+        if row["p_home"] == "":
+            lines.append("主勝 / 和 / 客勝：賽前紀錄不足，無機率。")
         else:
             lines.append(
                 f"主勝 {float(row['p_home']):.1%} / 和 {float(row['p_draw']):.1%} / "
                 f"客勝 {float(row['p_away']):.1%}"
             )
-            lines.append(f"預期入球 {row['home_xg']}-{row['away_xg']}，傾向 { _pick_zh(row['pick']) }")
             if row["low_confidence"]:
                 lines.append(
-                    f"信心不足：主隊近況 {row['home_prior_n']} 場，客隊 {row['away_prior_n']} 場。"
+                    f"該近況窗口未填滿：主隊 {row['home_prior_n']} 場，客隊 {row['away_prior_n']} 場。"
                 )
-            if "days_earlier" in str(row["note"]):
-                lines.append("近況只計到最近一場有比分的賽事；中間未填比分的賽程沒有算進攻守。")
         lines.append("")
     lines.extend(coverage_notes)
     return "\n".join(lines).strip() + "\n"
 
 
-def _pick_zh(pick: str) -> str:
-    return {"home": "主勝", "draw": "和", "away": "客勝"}.get(pick, pick)
+def _merge_fixtures(existing: list[Match], extra: list[Match]) -> list[Match]:
+    seen = {(match.date, match.home_team, match.away_team) for match in existing}
+    merged = list(existing)
+    for match in extra:
+        key = (match.date, match.home_team, match.away_team)
+        if key not in seen:
+            merged.append(match)
+            seen.add(key)
+    merged.sort(key=lambda match: (match.kickoff, match.competition, match.home_team))
+    return merged
 
 
 def fixtures_for(matches: list[Match], on: date) -> list[Match]:
@@ -208,8 +276,10 @@ def load_prediction_matches(cache_dir: Path, refresh: bool = False) -> tuple[lis
         keep_unplayed=True,
     )
     notes = [
-        "2026-27 只載入 football.json 當季實際存在的頂級聯賽檔。",
-        "openfootball/champions-league 沒有 2026-27 目錄，歐聯今晚賽程不在資料內。",
+        "訓練集是 2021-22 至 2025-26 五個完整賽季。",
+        "輸出比較最近 2、3、5 季，每隊再用賽前最近 5、10、20 場。",
+        "2026-27 只加入預測日期之前已有比分的比賽，不計入主場優勢基準。",
+        "2026-10-21 歐冠賽程來自 BBC Sport 與 FBref，不在訓練檔內。",
     ]
     for note in extra_notes:
         if note.get("status") not in (None, 200) and note.get("url"):
@@ -226,18 +296,8 @@ def load_prediction_matches(cache_dir: Path, refresh: bool = False) -> tuple[lis
 def predict_date(on: date, cache_dir: Path, output_dir: Path, *, refresh: bool = False, push: bool = True) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     history, unplayed, notes = load_prediction_matches(cache_dir, refresh=refresh)
-    fixtures = fixtures_for(unplayed, on)
-    features = build_features(history, fixtures)
-    by_key = {
-        (row["date"], row["home_team"], row["away_team"]): row
-        for row in features
-    }
-    predictions = []
-    for fixture in fixtures:
-        feature = by_key[(fixture.date.isoformat(), fixture.home_team, fixture.away_team)]
-        feature["kickoff"] = fixture.kickoff
-        edge = league_edge(history, fixture.competition)
-        predictions.append(predict_fixture(feature, edge))
+    fixtures = _merge_fixtures(fixtures_for(unplayed, on), web_fixtures_on(on))
+    predictions = compare_windows(history, fixtures)
     message = format_message(on, predictions, notes)
     (output_dir / "predictions.csv").write_text("", encoding="utf-8")
     with (output_dir / "predictions.csv").open("w", encoding="utf-8", newline="") as handle:

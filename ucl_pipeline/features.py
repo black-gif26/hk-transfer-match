@@ -33,6 +33,11 @@ FEATURE_FIELDS = [
     "home_last10_l",
     "home_last10_gf",
     "home_last10_ga",
+    "home_last20_w",
+    "home_last20_d",
+    "home_last20_l",
+    "home_last20_gf",
+    "home_last20_ga",
     "home_rest_days",
     "home_insufficient_history",
     "away_prior_n",
@@ -46,6 +51,11 @@ FEATURE_FIELDS = [
     "away_last10_l",
     "away_last10_gf",
     "away_last10_ga",
+    "away_last20_w",
+    "away_last20_d",
+    "away_last20_l",
+    "away_last20_gf",
+    "away_last20_ga",
     "away_rest_days",
     "away_insufficient_history",
 ]
@@ -118,6 +128,7 @@ def _form_block(history: list[tuple], target: Match, prefix: str) -> dict[str, o
     prior = len(history)
     last5 = _split(history[-5:])
     last10 = _split(history[-10:])
+    last20 = _split(history[-20:])
     rest: object = ""
     if history:
         rest = (target.date - history[-1][0]).days
@@ -126,7 +137,7 @@ def _form_block(history: list[tuple], target: Match, prefix: str) -> dict[str, o
         f"{prefix}_insufficient_history": 1 if prior < 5 else 0,
         f"{prefix}_rest_days": rest,
     }
-    for window, stats in (("last5", last5), ("last10", last10)):
+    for window, stats in (("last5", last5), ("last10", last10), ("last20", last20)):
         for key, value in stats.items():
             block[f"{prefix}_{window}_{key}"] = value
     return block
