@@ -24,6 +24,7 @@ TEAM_ALIASES = {
     "Paris Saint-Germain": "Paris Saint-Germain FC",
     "PSV Eindhoven": "PSV",
     "RB Salzburg": "FC Red Bull Salzburg",
+    "RC Lens": "Racing Club de Lens",
     "Real Madrid": "Real Madrid CF",
     "Shakhtar Donetsk": "FK Shakhtar Donetsk",
     "SK Sturm Graz": "SK Sturm Graz",
