@@ -6,6 +6,8 @@ import unittest
 from datetime import date
 
 from ucl_pipeline.dedupe import dedupe
+from ucl_pipeline.predict import format_message, outcome_probs, predict_fixture
+from ucl_pipeline.telegram import credentials_from_env
 from ucl_pipeline.fbtxt import parse_champions_league_text, parse_fb_date
 from ucl_pipeline.features import build_features
 from ucl_pipeline.models import SOURCE_PRIORITY, Match
@@ -185,6 +187,44 @@ class FeatureTests(unittest.TestCase):
         self.assertEqual(second["home_last5_w"], 3)
         self.assertEqual(second["home_rest_days"], 12)
         self.assertEqual(second["home_insufficient_history"], 1)
+
+
+class PredictTests(unittest.TestCase):
+    def test_poisson_probabilities_sum_to_one_and_favour_the_stronger_side(self):
+        home, draw, away = outcome_probs(2.0, 0.6)
+        self.assertAlmostEqual(home + draw + away, 1.0, places=6)
+        self.assertGreater(home, away)
+
+    def test_prediction_uses_recent_rates_and_flags_short_history(self):
+        feature = {
+            "date": "2026-10-21",
+            "kickoff": "20:00",
+            "season": "2026-27",
+            "competition": "La Liga",
+            "stage": "Matchday 6",
+            "home_team": "Levante UD",
+            "away_team": "Athletic Club",
+            "home_prior_n": 4,
+            "away_prior_n": 12,
+            "home_last10_gf": 6,
+            "home_last10_ga": 4,
+            "away_last10_gf": 15,
+            "away_last10_ga": 8,
+        }
+        row = predict_fixture(feature, (1.6, 1.2))
+        self.assertEqual(row["low_confidence"], 1)
+        self.assertIn(row["pick"], {"home", "draw", "away"})
+        self.assertAlmostEqual(float(row["p_home"]) + float(row["p_draw"]) + float(row["p_away"]), 1.0, places=2)
+
+    def test_message_states_when_no_fixture_exists(self):
+        text = format_message(date(2026, 10, 21), [], ["checked"])
+        self.assertIn("沒有未開賽", text)
+        self.assertIn("checked", text)
+
+    def test_telegram_credentials_are_not_hardcoded(self):
+        token, chat = credentials_from_env()
+        self.assertFalse(token)
+        self.assertFalse(chat)
 
 
 if __name__ == "__main__":

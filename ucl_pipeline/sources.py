@@ -145,9 +145,15 @@ def _json_goals(score: object) -> tuple[int | None, int | None, bool, str, str]:
     return None, None, True, "unparsed_json_score", "ambiguous"
 
 
-def load_football_json(cache_dir: Path, refresh: bool, notes: list[dict]) -> list[Match]:
+def load_football_json(
+    cache_dir: Path,
+    refresh: bool,
+    notes: list[dict],
+    seasons: tuple[str, ...] | None = None,
+    keep_unplayed: bool = False,
+) -> list[Match]:
     matches: list[Match] = []
-    for season in TARGET_SEASONS:
+    for season in seasons or TARGET_SEASONS:
         mode, names = _dir_names(FOOTBALL_JSON_API.format(season=season), cache_dir, refresh)
         if mode != "listed":
             names = list(FALLBACK_FOOTBALL_JSON.get(season, []))
@@ -182,7 +188,11 @@ def load_football_json(cache_dir: Path, refresh: bool, notes: list[dict]) -> lis
                 home, away, ambiguous, reason, disposition = _json_goals(row.get("score"))
                 if disposition == "unplayed":
                     unplayed += 1
-                    continue
+                    if not keep_unplayed:
+                        continue
+                    home = away = None
+                    ambiguous = False
+                    reason = "unplayed"
                 matches.append(
                     Match(
                         date=date.fromisoformat(when_text),
@@ -197,6 +207,7 @@ def load_football_json(cache_dir: Path, refresh: bool, notes: list[dict]) -> lis
                         priority=SOURCE_PRIORITY["football.json"],
                         score_ambiguous=ambiguous,
                         ambiguous_reason=reason,
+                        kickoff=str(row.get("time") or ""),
                     )
                 )
             if unplayed:

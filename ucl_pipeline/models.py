@@ -21,6 +21,7 @@ class Match:
     score_ambiguous: bool = False
     ambiguous_reason: str = ""
     date_imputed: bool = False
+    kickoff: str = ""
 
     def goals_pair(self) -> tuple[int, int] | None:
         if self.home_goals is None or self.away_goals is None:

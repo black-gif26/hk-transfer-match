@@ -71,19 +71,20 @@ def _split(rows: list[tuple]) -> dict[str, int]:
     }
 
 
-def build_features(matches: list[Match]) -> list[dict]:
+def build_features(matches: list[Match], targets: list[Match] | None = None) -> list[dict]:
     played = [
         match
         for match in matches
         if match.goals_pair() is not None and not match.score_ambiguous
     ]
     played.sort(key=lambda match: (match.date, match.competition, match.home_team, match.away_team))
-    targets = [
-        match
-        for match in matches
-        if match.competition == "UEFA Champions League" and match.goals_pair() is not None
-    ]
-    targets.sort(key=lambda match: (match.date, match.home_team, match.away_team))
+    if targets is None:
+        targets = [
+            match
+            for match in matches
+            if match.competition == "UEFA Champions League" and match.goals_pair() is not None
+        ]
+    targets = sorted(targets, key=lambda match: (match.date, match.home_team, match.away_team))
 
     history: dict[str, list[tuple]] = defaultdict(list)
     index = 0
