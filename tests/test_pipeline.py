@@ -10,6 +10,7 @@ from ucl_pipeline.predict import (
     format_message,
     outcome_probs,
     predict_fixture,
+    score_markets,
     training_seasons,
     usable_history,
 )
@@ -201,6 +202,13 @@ class PredictTests(unittest.TestCase):
         home, draw, away = outcome_probs(2.0, 0.6)
         self.assertAlmostEqual(home + draw + away, 1.0, places=6)
         self.assertGreater(home, away)
+        busy = score_markets(2.0, 1.4)
+        quiet = score_markets(0.8, 0.6)
+        self.assertAlmostEqual(busy["p_over_25"] + busy["p_under_25"], 1.0, places=6)
+        self.assertGreater(busy["p_over_25"], quiet["p_over_25"])
+        self.assertGreater(busy["p_btts"], quiet["p_btts"])
+        self.assertGreater(busy["p_btts"], 0.0)
+        self.assertLess(busy["p_btts"], 1.0)
 
     def test_prediction_uses_recent_rates_and_flags_short_history(self):
         feature = {
@@ -222,6 +230,9 @@ class PredictTests(unittest.TestCase):
         self.assertEqual(row["low_confidence"], 1)
         self.assertIn(row["pick"], {"home", "draw", "away"})
         self.assertAlmostEqual(float(row["p_home"]) + float(row["p_draw"]) + float(row["p_away"]), 1.0, places=2)
+        self.assertAlmostEqual(float(row["p_over_25"]) + float(row["p_under_25"]), 1.0, places=2)
+        self.assertGreater(float(row["home_xg"]), 0)
+        self.assertGreater(float(row["away_xg"]), 0)
 
     def test_windows_use_latest_complete_seasons_and_drop_future_updates(self):
         self.assertEqual(training_seasons(2), ("2024-25", "2025-26"))

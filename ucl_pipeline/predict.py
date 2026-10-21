@@ -39,6 +39,9 @@ PREDICTION_FIELDS = [
     "away_team",
     "home_xg",
     "away_xg",
+    "p_over_25",
+    "p_under_25",
+    "p_btts",
     "p_home",
     "p_draw",
     "p_away",
@@ -82,10 +85,16 @@ def poisson_pmf(k: int, lam: float) -> float:
     return probability
 
 
-def outcome_probs(home_xg: float, away_xg: float, limit: int = 10) -> tuple[float, float, float]:
+def score_markets(home_xg: float, away_xg: float, limit: int = 10) -> dict[str, float]:
+    """Independent Poisson markets on the same 0..limit scoreline grid.
+
+    Over 2.5 is three or more goals. Both teams score means each side has at least one.
+    The truncated grid is renormalised so each pair of complementary markets sums to 1.
+    """
     home = [poisson_pmf(k, home_xg) for k in range(limit + 1)]
     away = [poisson_pmf(k, away_xg) for k in range(limit + 1)]
     home_win = draw = away_win = 0.0
+    over_25 = under_25 = btts = 0.0
     for home_goals, home_p in enumerate(home):
         for away_goals, away_p in enumerate(away):
             mass = home_p * away_p
@@ -95,10 +104,35 @@ def outcome_probs(home_xg: float, away_xg: float, limit: int = 10) -> tuple[floa
                 draw += mass
             else:
                 away_win += mass
+            if home_goals + away_goals >= 3:
+                over_25 += mass
+            else:
+                under_25 += mass
+            if home_goals >= 1 and away_goals >= 1:
+                btts += mass
     total = home_win + draw + away_win
     if total <= 0:
-        return 0.0, 0.0, 0.0
-    return home_win / total, draw / total, away_win / total
+        return {
+            "p_home": 0.0,
+            "p_draw": 0.0,
+            "p_away": 0.0,
+            "p_over_25": 0.0,
+            "p_under_25": 0.0,
+            "p_btts": 0.0,
+        }
+    return {
+        "p_home": home_win / total,
+        "p_draw": draw / total,
+        "p_away": away_win / total,
+        "p_over_25": over_25 / total,
+        "p_under_25": under_25 / total,
+        "p_btts": btts / total,
+    }
+
+
+def outcome_probs(home_xg: float, away_xg: float, limit: int = 10) -> tuple[float, float, float]:
+    markets = score_markets(home_xg, away_xg, limit)
+    return markets["p_home"], markets["p_draw"], markets["p_away"]
 
 
 def _per_game(total: int, prior_n: int, form_n: int) -> float | None:
@@ -146,6 +180,9 @@ def predict_fixture(
             **_identity(feature),
             "home_xg": "",
             "away_xg": "",
+            "p_over_25": "",
+            "p_under_25": "",
+            "p_btts": "",
             "p_home": "",
             "p_draw": "",
             "p_away": "",
@@ -159,7 +196,8 @@ def predict_fixture(
     home_edge = (edge[0] - edge[1]) / 2
     home_xg = max(0.05, (home_for + away_against) / 2 + home_edge)
     away_xg = max(0.05, (away_for + home_against) / 2 - home_edge)
-    p_home, p_draw, p_away = outcome_probs(home_xg, away_xg)
+    markets = score_markets(home_xg, away_xg)
+    p_home, p_draw, p_away = markets["p_home"], markets["p_draw"], markets["p_away"]
     pick = max((("home", p_home), ("draw", p_draw), ("away", p_away)), key=lambda item: item[1])[0]
     low = home_prior < form_n or away_prior < form_n
     notes: list[str] = []
@@ -174,6 +212,9 @@ def predict_fixture(
         **_identity(feature),
         "home_xg": round(home_xg, 2),
         "away_xg": round(away_xg, 2),
+        "p_over_25": round(markets["p_over_25"], 3),
+        "p_under_25": round(markets["p_under_25"], 3),
+        "p_btts": round(markets["p_btts"], 3),
         "p_home": round(p_home, 3),
         "p_draw": round(p_draw, 3),
         "p_away": round(p_away, 3),
@@ -229,6 +270,14 @@ def format_message(on: date, rows: list[dict], coverage_notes: list[str]) -> str
         if row["p_home"] == "":
             lines.append("主勝 / 和 / 客勝：賽前紀錄不足，無機率。")
         else:
+            if row.get("home_xg") not in ("", None):
+                lines.append(f"主隊預期入球 {float(row['home_xg']):.2f}")
+                lines.append(f"客隊預期入球 {float(row['away_xg']):.2f}")
+            if row.get("p_over_25") not in ("", None):
+                lines.append(
+                    f"大 2.5 {float(row['p_over_25']):.1%} / 細 2.5 {float(row['p_under_25']):.1%}"
+                )
+                lines.append(f"雙方入球 {float(row['p_btts']):.1%}")
             lines.append(
                 f"主勝 {float(row['p_home']):.1%} / 和 {float(row['p_draw']):.1%} / "
                 f"客勝 {float(row['p_away']):.1%}"
