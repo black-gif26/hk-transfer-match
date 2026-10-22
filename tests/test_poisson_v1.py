@@ -22,6 +22,7 @@ from ucl_pipeline.poisson_v1 import (
     time_weight,
 )
 from ucl_pipeline.shadow import label_prediction, render_draft, write_shadow
+from ucl_pipeline.web_fixtures import EL_2026_10_22, hkjc_label
 from ucl_pipeline.v1_audit import leakage_problems
 
 
@@ -221,6 +222,37 @@ class PoissonV1Tests(unittest.TestCase):
         self.assertIn("V1實驗", text)
         self.assertIn("無法預測", text)
         self.assertIn("不是賽果", text)
+        named = render_draft(
+            [
+                {
+                    "kickoff": "00:45 HK",
+                    "hkjc_code": "FB7332",
+                    "home_zh": "祖雲達斯",
+                    "away_zh": "雷恩",
+                    "home_team": "Juventus FC",
+                    "away_team": "Stade Rennais FC 1901",
+                    "role": "v1_experimental",
+                    "p_home_v1": 0.516,
+                    "p_draw_v1": 0.249,
+                    "p_away_v1": 0.235,
+                    "p_over_v1": 0.483,
+                    "p_btts_v1": 0.505,
+                    "home_xg_v1": 1.61,
+                    "away_xg_v1": 1.00,
+                }
+            ],
+            {
+                "updated_at_hkt": "2026-10-22 16:00 香港時間",
+                "prediction_cutoff": "2026-10-22",
+                "data_version": {"sha256_12": "abc", "max_date": "2026-09-20"},
+                "source_summary": "齊全度未知",
+            },
+        )
+        self.assertIn("FB7332 祖雲達斯 vs 雷恩", named)
+        self.assertNotIn("Juventus", named)
+        labelled = [hkjc_label(home, away) for _kick, home, away in EL_2026_10_22]
+        self.assertEqual(len(labelled), 18)
+        self.assertTrue(all(code.startswith("FB") and home_zh and away_zh for code, home_zh, away_zh in labelled))
 
     def test_leakage_check_rejects_a_row_before_its_cutoff(self):
         row = {

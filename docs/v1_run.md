@@ -26,4 +26,4 @@ python3 -m ucl_pipeline v1-audit --folder output/v1/<stamp> --cache cache
 python3 -m ucl_pipeline shadow --date YYYY-MM-DD --output output --cache cache
 ```
 
-Shadow refits frozen V1 on matches dated before that day and writes `output/shadow/<UTC stamp>/`. It does not call Telegram.
+Shadow refits frozen V1 on matches dated before that day and writes `output/shadow/<UTC stamp>/`. It does not call Telegram. The draft prints HKJC coupon names when a fixture has one. English names in the CSV stay the model keys.

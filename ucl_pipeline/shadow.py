@@ -20,7 +20,7 @@ from ucl_pipeline.poisson_v1 import (
     predict_rates,
 )
 from ucl_pipeline.predict import _merge_fixtures, fixtures_for, load_prediction_matches
-from ucl_pipeline.web_fixtures import web_fixtures_on
+from ucl_pipeline.web_fixtures import hkjc_label, web_fixtures_on
 
 MODEL_VERSION = f"poisson-v1/{__version__}/decay={FROZEN_DECAY}/l2={FROZEN_L2}"
 
@@ -77,11 +77,17 @@ def render_draft(rows: list[dict], meta: dict) -> str:
         f"資料版本：{meta['data_version']['sha256_12']}，最後有比分日期 {meta['data_version']['max_date']}",
         "V1 凍結 decay=0.0015、L2=4。歐霸沒有用來選參數，V1 標明實驗。",
         "歐霸評分水平用訓練參考聯賽，不是歐霸自己的入球水平。",
+        "隊名用馬會 FB 場次譯名。",
         meta["source_summary"],
         "",
     ]
     for row in rows:
-        lines.append(f"{row['kickoff']} {row['home_team']} vs {row['away_team']}")
+        looked_code, looked_home, looked_away = hkjc_label(row["home_team"], row["away_team"])
+        code = row.get("hkjc_code") or looked_code
+        home = row.get("home_zh") or looked_home or row["home_team"]
+        away = row.get("away_zh") or looked_away or row["away_team"]
+        prefix = f"{code} " if code else ""
+        lines.append(f"{row['kickoff']} {prefix}{home} vs {away}")
         if row["role"] == "abstain":
             lines.append("無法預測（未知球隊）")
         elif row["role"] == "v0_fallback":
@@ -137,12 +143,16 @@ def shadow_rows(history: list[Match], fixtures: list[Match], on: date) -> tuple[
         v0_row = v0[(fixture.date, fixture.home_team, fixture.away_team)]
         v1 = predict_rates(fit, fixture.home_team, fixture.away_team, fixture.competition)
         labelled = label_prediction(fixture, v1, v0_row)
+        code, home_zh, away_zh = hkjc_label(fixture.home_team, fixture.away_team)
         row = {
             "date": fixture.date.isoformat(),
             "kickoff": fixture.kickoff,
             "competition": fixture.competition,
             "role": labelled["role"],
             "warnings": ",".join(labelled["warnings"]),
+            "hkjc_code": code,
+            "home_zh": home_zh,
+            "away_zh": away_zh,
             "home_team": fixture.home_team,
             "away_team": fixture.away_team,
             "model_version": MODEL_VERSION,
