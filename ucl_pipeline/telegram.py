@@ -36,4 +36,5 @@ def send_message(text: str, token: str, chat_id: str, *, timeout: int = 30) -> d
         return {"sent": False, "reason": "network", "detail": str(exc.reason)}
     if not body.get("ok"):
         return {"sent": False, "reason": "api_rejected", "detail": str(body.get("description") or "")[:300]}
-    return {"sent": True, "reason": "ok"}
+    result = body.get("result") if isinstance(body.get("result"), dict) else {}
+    return {"sent": True, "reason": "ok", "message_id": result.get("message_id")}
