@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from ucl_pipeline.pipeline import run
+from ucl_pipeline.poisson_v1 import run_v1
 from ucl_pipeline.predict import predict_date
 
 
@@ -36,8 +37,26 @@ def predict_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def v1_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fit Poisson V1 with chronological validation. "
+            "Does not change the default predict command or Telegram output."
+        )
+    )
+    parser.add_argument("--output", type=Path, default=Path("output"))
+    parser.add_argument("--cache", type=Path, default=Path("cache"))
+    parser.add_argument("--refresh", action="store_true")
+    return parser
+
+
 def main(argv: list[str] | None = None) -> None:
     args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list and args_list[0] == "v1":
+        args = v1_parser().parse_args(args_list[1:])
+        folder = run_v1(args.cache, args.output, refresh=args.refresh)
+        print(f"wrote {folder.resolve()}")
+        return
     if args_list and args_list[0] == "predict":
         args = predict_parser().parse_args(args_list[1:])
         result = predict_date(
