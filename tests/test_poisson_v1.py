@@ -250,6 +250,9 @@ class PoissonV1Tests(unittest.TestCase):
         )
         self.assertIn("FB7332 祖雲達斯 vs 雷恩", named)
         self.assertNotIn("Juventus", named)
+        self.assertIn("大2.5 48.3%｜小2.5 51.7% → 傾向小", named)
+        self.assertIn("V1實驗", text)
+        self.assertIn("大2.5 60.0%｜小2.5 40.0% → 傾向大", text)
         labelled = [hkjc_label(home, away) for _kick, home, away in EL_2026_10_22]
         self.assertEqual(len(labelled), 18)
         self.assertTrue(all(code.startswith("FB") and home_zh and away_zh for code, home_zh, away_zh in labelled))

@@ -49,6 +49,37 @@ def _pct(value: object) -> str:
     return f"{float(value):.1%}"
 
 
+def _lean(options: list[tuple[str, float]]) -> str:
+    """Name the single highest probability. A tie stays unnamed."""
+    best = max(value for _name, value in options)
+    names = [name for name, value in options if value == best]
+    if len(names) != 1:
+        return "未分高低"
+    return f"傾向{names[0]}"
+
+
+def _market_lines(tag: str, row: dict, suffix: str) -> list[str]:
+    """Spell out both sides. Over 2.5 below one half means the under is higher."""
+    home = float(row[f"p_home_{suffix}"])
+    draw = float(row[f"p_draw_{suffix}"])
+    away = float(row[f"p_away_{suffix}"])
+    over = float(row[f"p_over_{suffix}"])
+    under = 1.0 - over
+    btts = float(row[f"p_btts_{suffix}"])
+    no_btts = 1.0 - btts
+    note = "｜近況少" if suffix == "v1" and "low_history" in row.get("v1_flags", "") else ""
+    return [
+        f"{tag}{note}",
+        (
+            f"主勝 {_pct(home)}｜和 {_pct(draw)}｜客勝 {_pct(away)} → "
+            f"{_lean([('主勝', home), ('和', draw), ('客勝', away)])}"
+        ),
+        f"大2.5 {_pct(over)}｜小2.5 {_pct(under)} → {_lean([('大', over), ('小', under)])}",
+        f"雙方入球 {_pct(btts)}｜冇 {_pct(no_btts)} → {_lean([('有', btts), ('冇', no_btts)])}",
+        f"預期入球 {float(row[f'home_xg_{suffix}']):.2f}-{float(row[f'away_xg_{suffix}']):.2f}",
+    ]
+
+
 def label_prediction(fixture: Match, v1: dict, v0_row: dict) -> dict:
     """Europa V1 is unvalidated. Unseen teams abstain. V0 is a labelled fallback."""
     experimental = fixture.competition == "UEFA Europa League"
@@ -78,6 +109,7 @@ def render_draft(rows: list[dict], meta: dict) -> str:
         "V1 凍結 decay=0.0015、L2=4。歐霸沒有用來選參數，V1 標明實驗。",
         "歐霸評分水平用訓練參考聯賽，不是歐霸自己的入球水平。",
         "隊名用馬會 FB 場次譯名。",
+        "讀法：1X2 的傾向係主勝、和、客勝入面最高，可以低過 50%。大2.5＝總入球 3 球或以上，小2.5＝2 球或以下；大低過 50% 就係傾向小。雙方入球＝兩隊都有入球。",
         meta["source_summary"],
         "",
     ]
@@ -91,20 +123,10 @@ def render_draft(rows: list[dict], meta: dict) -> str:
         if row["role"] == "abstain":
             lines.append("無法預測（未知球隊）")
         elif row["role"] == "v0_fallback":
-            lines.append(
-                "V1 無法使用。V0後備 "
-                f"主{_pct(row['p_home_v0'])} 和{_pct(row['p_draw_v0'])} 客{_pct(row['p_away_v0'])}｜"
-                f"大2.5 {_pct(row['p_over_v0'])}｜雙方 {_pct(row['p_btts_v0'])}｜"
-                f"預期 {float(row['home_xg_v0']):.2f}-{float(row['away_xg_v0']):.2f}"
-            )
+            lines.extend(_market_lines("V1 無法使用。V0後備", row, "v0"))
         else:
             label = "V1實驗" if row["role"] == "v1_experimental" else "V1"
-            short = "｜近況少" if "low_history" in row.get("v1_flags", "") else ""
-            lines.append(
-                f"{label} 主{_pct(row['p_home_v1'])} 和{_pct(row['p_draw_v1'])} 客{_pct(row['p_away_v1'])}｜"
-                f"大2.5 {_pct(row['p_over_v1'])}｜雙方 {_pct(row['p_btts_v1'])}｜"
-                f"預期 {float(row['home_xg_v1']):.2f}-{float(row['away_xg_v1']):.2f}{short}"
-            )
+            lines.extend(_market_lines(label, row, "v1"))
         lines.append("")
     lines.append("警告：2026-09-20 之後的聯賽比分齊全度未知。未知球隊不預測。歐霸 V1 未經驗證。")
     return "\n".join(lines).strip() + "\n"
