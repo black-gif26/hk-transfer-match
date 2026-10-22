@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import json
 import math
 import unittest
 from datetime import date, timedelta
+from pathlib import Path
 
 from ucl_pipeline.models import Match
 from ucl_pipeline.poisson_v1 import (
     V1Config,
+    competition_flags,
     eligible_matches,
     fit_poisson,
     initial_theta,
     objective_and_gradient,
+    pick_validation_candidate,
     predict_rates,
     select_and_evaluate,
     time_weight,
 )
+from ucl_pipeline.shadow import write_shadow
+from ucl_pipeline.v1_audit import leakage_problems
 
 
 def _match(day: date, home: str, away: str, hg: int, ag: int, competition: str = "League", season: str = "2023-24", ambiguous: bool = False) -> Match:
@@ -81,6 +87,7 @@ class PoissonV1Tests(unittest.TestCase):
         self.assertLess(result["fit"].cutoff, date(2025, 9, 3))
         flagged = [row for row in result["validation_rows"] if row["home_team"] == "C" and row["away_team"] == "A"]
         self.assertIn("cross_league_strength", flagged[0]["v1_flags"])
+        self.assertIn("cross_domestic_league", flagged[0]["v1_flags"])
         self.assertTrue(eligible_matches(rows))
 
     def test_analytic_gradient_matches_finite_differences(self):
@@ -131,6 +138,57 @@ class PoissonV1Tests(unittest.TestCase):
         self.assertAlmostEqual(max(objectives) - min(objectives), 0.0, places=6)
         home = [predict_rates(fit, "A", "B", "League")["home_xg"] for fit in fits]
         self.assertAlmostEqual(max(home) - min(home), 0.0, places=5)
+
+    def test_domestic_flag_is_separate_from_no_shared_competition(self):
+        shared_europe = competition_flags(
+            {"English Premier League", "UEFA Champions League"},
+            {"La Liga", "UEFA Champions League"},
+            10,
+            10,
+        )
+        self.assertEqual(shared_europe, ["cross_domestic_league"])
+        self.assertEqual(competition_flags({"Bundesliga"}, {"Bundesliga"}, 10, 10), [])
+        self.assertIn("cross_league_strength", competition_flags({"Primeira Liga"}, {"Eredivisie"}, 10, 10))
+
+    def test_failed_validation_month_is_ineligible(self):
+        failed = {"fits_converged": False, "metrics": {"n": 10, "log_loss_1x2": 0.1}}
+        kept = {"fits_converged": True, "metrics": {"n": 10, "log_loss_1x2": 0.9}, "decay": 0.0015}
+        chosen = pick_validation_candidate([failed, kept])
+        self.assertEqual(chosen["decay"], 0.0015)
+        with self.assertRaises(ValueError):
+            pick_validation_candidate([failed])
+
+    def test_shadow_refits_before_cutoff_and_does_not_write_telegram(self):
+        history = [
+            _match(date(2024, 5, 1), "A", "B", 2, 0),
+            _match(date(2024, 5, 2), "A", "B", 1, 0),
+            _match(date(2026, 10, 22), "A", "B", 9, 0),
+        ]
+        fixture = _match(date(2026, 10, 22), "A", "B", None, None)
+        folder = write_shadow(history, [fixture], date(2026, 10, 22), Path("output"), stamp="test-shadow")
+        text = (folder / "fit.json").read_text(encoding="utf-8")
+        self.assertIn("2026-10-22", text)
+        self.assertIn('"telegram": false', text)
+        self.assertNotIn("2026-05-01", text)
+        saved = (folder / "predictions.csv").read_text(encoding="utf-8")
+        self.assertIn("A", saved)
+        self.assertFalse((folder / "telegram_message.txt").exists())
+        payload = json.loads(text)
+        self.assertEqual(payload["data_version"]["max_date"], "2024-05-02")
+        self.assertLess(payload["fit"]["n_matches"], 3)
+
+    def test_leakage_check_rejects_a_row_before_its_cutoff(self):
+        row = {
+            "season": "2025-26",
+            "date": "2025-09-03",
+            "cutoff": "2025-10-01",
+            "date_obj": date(2025, 9, 3),
+            "cutoff_obj": date(2025, 10, 1),
+            "v1_ok": 1,
+            "converged": 1,
+            "home_team": "A",
+        }
+        self.assertTrue(leakage_problems([row], "2025-26"))
 
 
 if __name__ == "__main__":

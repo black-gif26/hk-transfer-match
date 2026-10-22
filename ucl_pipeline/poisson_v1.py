@@ -57,6 +57,16 @@ LOW_HISTORY = 5
 ETA_MIN = -6.0
 ETA_MAX = 2.5
 PROB_FLOOR = 1e-15
+# Frozen on 2024–25 validation log loss. Do not retune from 2025–26.
+FROZEN_DECAY = 0.0015
+FROZEN_L2 = 4.0
+NON_DOMESTIC = frozenset(
+    {
+        "UEFA Champions League",
+        "UEFA Champions League Qualifying",
+        "UEFA Europa League",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -468,11 +478,12 @@ def predict_rates(fit: PoissonFit, home: str, away: str, competition: str, limit
         return {"abstain": 1, "reason": "probability_sum"}
     home_comps = fit.team_competitions.get(home, set())
     away_comps = fit.team_competitions.get(away, set())
-    flags = []
-    if fit.team_counts.get(home, 0) < LOW_HISTORY or fit.team_counts.get(away, 0) < LOW_HISTORY:
-        flags.append("low_history")
-    if not home_comps & away_comps:
-        flags.append("cross_league_strength")
+    flags = competition_flags(
+        home_comps,
+        away_comps,
+        fit.team_counts.get(home, 0),
+        fit.team_counts.get(away, 0),
+    )
     if unseen_comp:
         flags.append("unseen_competition_level")
     return {
@@ -484,6 +495,37 @@ def predict_rates(fit: PoissonFit, home: str, away: str, competition: str, limit
         "flags": flags,
         **markets,
     }
+
+
+def competition_flags(home_comps: set[str], away_comps: set[str], home_n: int, away_n: int) -> list[str]:
+    """Separate 'no shared competition' from clubs whose domestic leagues differ.
+
+    cross_league_strength means the two clubs have no competition in common in the fit.
+    cross_domestic_league means each club has a domestic competition and those sets
+    do not overlap. Sharing a European competition does not clear the domestic flag.
+    """
+    flags = []
+    if home_n < LOW_HISTORY or away_n < LOW_HISTORY:
+        flags.append("low_history")
+    if not home_comps & away_comps:
+        flags.append("cross_league_strength")
+    home_domestic = home_comps - NON_DOMESTIC
+    away_domestic = away_comps - NON_DOMESTIC
+    if home_domestic and away_domestic and not (home_domestic & away_domestic):
+        flags.append("cross_domestic_league")
+    return flags
+
+
+def pick_validation_candidate(entries: list[dict]) -> dict:
+    """Use only candidates whose every validation month converged.
+
+    A failed month makes the whole decay/L2 pair ineligible. Surviving months
+    from that pair are not a selection score.
+    """
+    eligible = [entry for entry in entries if entry["fits_converged"] and entry["metrics"].get("n", 0)]
+    if not eligible:
+        raise ValueError("no validation candidate converged on every month")
+    return min(eligible, key=lambda entry: entry["metrics"]["log_loss_1x2"])
 
 
 def _outcome_index(home_goals: int, away_goals: int) -> int:
@@ -679,7 +721,7 @@ def select_and_evaluate(matches: list[Match], config: V1Config | None = None) ->
     if not validation or not test:
         raise ValueError("validation and test seasons need eligible matches")
     grid = []
-    best = None
+    candidates = []
     for decay in config.decays:
         for l2 in config.l2_grid:
             scored = _score_period(history, validation, decay, l2, config)
@@ -693,6 +735,7 @@ def select_and_evaluate(matches: list[Match], config: V1Config | None = None) ->
                 "rows": scored,
                 "fits_converged": not failed and bool(scored),
             }
+            candidates.append(entry)
             grid.append(
                 {
                     "decay": decay,
@@ -700,16 +743,12 @@ def select_and_evaluate(matches: list[Match], config: V1Config | None = None) ->
                     "n": metrics.get("n", 0),
                     "log_loss_1x2": metrics.get("log_loss_1x2"),
                     "fits_converged": entry["fits_converged"],
+                    "selection_eligible": entry["fits_converged"],
                     "max_grad_inf": max((row["grad_inf"] for row in scored), default=None),
                     "failed_fits": failed,
                 }
             )
-            if metrics.get("n", 0) == 0:
-                continue
-            if best is None or _prefer(entry, best):
-                best = entry
-    if best is None:
-        raise ValueError("validation produced no comparable fixtures")
+    best = pick_validation_candidate(candidates)
     test_rows = _score_period(history, test, best["decay"], best["l2"], config)
     compared = _comparable(test_rows)
     last_cutoff = max(_month_start(match.date) for match in test)
@@ -764,13 +803,6 @@ def _failed_fits(rows: list[dict]) -> list[dict]:
             }
         )
     return failed
-
-
-def _prefer(entry: dict, best: dict) -> bool:
-    """Prefer a converged grid point, then a lower validation 1X2 log loss."""
-    if entry["fits_converged"] != best["fits_converged"]:
-        return entry["fits_converged"]
-    return entry["metrics"]["log_loss_1x2"] < best["metrics"]["log_loss_1x2"]
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:

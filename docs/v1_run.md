@@ -17,4 +17,13 @@ The objective is a sum, not a mean:
 
 `L = Σ w_i (exp(η_home) - y_home η_home + exp(η_away) - y_away η_away) + (l2 / 2) * (home advantage² + every attack² + every defence² + every non-reference competition²)`.
 
-`w_i` is 1 when decay is 0 and `exp(-decay * days before cutoff)` otherwise. L2 is not scaled by the number of matches. Attack sums to 0 and defence sums to 0 inside the parameter vector. The reference competition is fixed at 0. The training loss does not clip η. Solver: `scipy.optimize.minimize`, method L-BFGS-B, `gtol` 1e-5, `maxiter` 2000. A fit is converged only when L-BFGS-B reports success and the analytic gradient infinity norm is at most 1e-5. Parameters.json records the optimizer status, message, iterations, objective, gradient infinity norm, runtime, bound hits, and how many fitted η values fall outside the prediction guard. The guard is not applied inside the training loss. Connected components of the match graph are counted; a cross-league flag still means the two clubs share no competition in that fit. Grid points that miss the gradient check stay in `metrics.json` under `failed_fits` and are not used for the 2025–26 score.
+`w_i` is 1 when decay is 0 and `exp(-decay * days before cutoff)` otherwise. L2 is not scaled by the number of matches. Attack sums to 0 and defence sums to 0 inside the parameter vector. The reference competition is fixed at 0. The training loss does not clip η. Solver: `scipy.optimize.minimize`, method L-BFGS-B, `gtol` 1e-5, `maxiter` 2000. A fit is converged only when L-BFGS-B reports success and the analytic gradient infinity norm is at most 1e-5. Parameters.json records the optimizer status, message, iterations, objective, gradient infinity norm, runtime, bound hits, and how many fitted η values fall outside the prediction guard. The guard is not applied inside the training loss. Connected components of the match graph are counted; a cross-league flag still means the two clubs share no competition in that fit. Grid points that miss the gradient check stay in `metrics.json` under `failed_fits` and are not used for the 2025–26 score. Decay 0.0015 and L2 4 are frozen from that 2024–25 choice.
+
+`cross_league_strength` means the clubs never share a competition in the fit. `cross_domestic_league` means their domestic leagues differ, including when they have both played in Europe.
+
+```bash
+python3 -m ucl_pipeline v1-audit --folder output/v1/<stamp> --cache cache
+python3 -m ucl_pipeline shadow --date YYYY-MM-DD --output output --cache cache
+```
+
+Shadow refits frozen V1 on matches dated before that day and writes `output/shadow/<UTC stamp>/`. It does not call Telegram.

@@ -8,8 +8,10 @@ from datetime import date
 from pathlib import Path
 
 from ucl_pipeline.pipeline import run
-from ucl_pipeline.poisson_v1 import run_v1
+from ucl_pipeline.poisson_v1 import load_history, run_v1
 from ucl_pipeline.predict import predict_date
+from ucl_pipeline.shadow import run_shadow
+from ucl_pipeline.v1_audit import write_audit
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,8 +52,35 @@ def v1_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def shadow_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Write local V0 and frozen V1 predictions. Does not call Telegram."
+    )
+    parser.add_argument("--date", required=True, help="prediction cutoff YYYY-MM-DD; matches on that day stay out")
+    parser.add_argument("--output", type=Path, default=Path("output"))
+    parser.add_argument("--cache", type=Path, default=Path("cache"))
+    return parser
+
+
+def audit_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Audit a saved V1 walk-forward folder without refitting the grid.")
+    parser.add_argument("--folder", type=Path, required=True)
+    parser.add_argument("--cache", type=Path, default=Path("cache"))
+    return parser
+
+
 def main(argv: list[str] | None = None) -> None:
     args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list and args_list[0] == "shadow":
+        args = shadow_parser().parse_args(args_list[1:])
+        folder = run_shadow(args.cache, args.output, date.fromisoformat(args.date))
+        print(f"wrote {folder.resolve()}")
+        return
+    if args_list and args_list[0] == "v1-audit":
+        args = audit_parser().parse_args(args_list[1:])
+        path = write_audit(args.folder, load_history(args.cache))
+        print(f"wrote {path.resolve()}")
+        return
     if args_list and args_list[0] == "v1":
         args = v1_parser().parse_args(args_list[1:])
         folder = run_v1(args.cache, args.output, refresh=args.refresh)
