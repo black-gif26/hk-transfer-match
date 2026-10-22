@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 from datetime import date, timedelta
 
@@ -10,6 +11,8 @@ from ucl_pipeline.poisson_v1 import (
     V1Config,
     eligible_matches,
     fit_poisson,
+    initial_theta,
+    objective_and_gradient,
     predict_rates,
     select_and_evaluate,
     time_weight,
@@ -35,6 +38,8 @@ class PoissonV1Tests(unittest.TestCase):
             rows.append(_match(start + timedelta(days=100 + index), "B", "A", 1, 1))
         fit = fit_poisson(rows, date(2024, 1, 1), decay=0.0, l2=0.1, config=V1Config(max_iter=200))
         self.assertTrue(fit.converged)
+        self.assertLessEqual(fit.grad_inf, 1e-5)
+        self.assertTrue(math.isfinite(fit.objective))
         self.assertGreater(fit.home_advantage, 0.0)
         self.assertAlmostEqual(sum(fit.attack.values()), 0.0, places=8)
         self.assertAlmostEqual(sum(fit.defence.values()), 0.0, places=8)
@@ -77,6 +82,55 @@ class PoissonV1Tests(unittest.TestCase):
         flagged = [row for row in result["validation_rows"] if row["home_team"] == "C" and row["away_team"] == "A"]
         self.assertIn("cross_league_strength", flagged[0]["v1_flags"])
         self.assertTrue(eligible_matches(rows))
+
+    def test_analytic_gradient_matches_finite_differences(self):
+        rows = []
+        start = date(2023, 3, 1)
+        for index in range(8):
+            rows.append(_match(start + timedelta(days=index), "A", "B", 2, 0, competition="League"))
+            rows.append(_match(start + timedelta(days=20 + index), "B", "C", 1, 2, competition="League"))
+            rows.append(_match(start + timedelta(days=40 + index), "C", "A", 0, 1, competition="Cup"))
+        cutoff = date(2023, 8, 1)
+        theta = initial_theta(rows, cutoff, 0.002, "shifted")
+        loss, grad = objective_and_gradient(rows, cutoff, 0.002, 0.7, theta)
+        self.assertTrue(math.isfinite(loss))
+        step = 1e-6
+        for index in range(theta.size):
+            up = theta.copy()
+            down = theta.copy()
+            up[index] += step
+            down[index] -= step
+            loss_up, _gradient = objective_and_gradient(rows, cutoff, 0.002, 0.7, up)
+            loss_down, _gradient = objective_and_gradient(rows, cutoff, 0.002, 0.7, down)
+            finite = (loss_up - loss_down) / (2.0 * step)
+            self.assertAlmostEqual(finite, float(grad[index]), places=5)
+        fit = fit_poisson(rows, cutoff, 0.002, 0.7, V1Config(max_iter=200))
+        self.assertTrue(fit.converged)
+        self.assertLessEqual(fit.grad_inf, 1e-5)
+        self.assertEqual(fit.n_components, 1)
+        self.assertEqual(fit.competition["League"], 0.0)
+        self.assertAlmostEqual(sum(fit.attack.values()), 0.0, places=8)
+        self.assertAlmostEqual(sum(fit.defence.values()), 0.0, places=8)
+
+    def test_disconnected_components_stay_in_the_reduced_parameterization(self):
+        rows = []
+        start = date(2023, 4, 1)
+        for index in range(10):
+            rows.append(_match(start + timedelta(days=index), "A", "B", 3, 1, competition="League"))
+            rows.append(_match(start + timedelta(days=index), "C", "D", 0, 0, competition="Other"))
+        cutoff = date(2023, 6, 1)
+        config = V1Config(max_iter=200)
+        fits = [
+            fit_poisson(rows, cutoff, 0.001, 1.0, config, x0=initial_theta(rows, cutoff, 0.001, kind))
+            for kind in ("mean_rate", "zeros", "shifted")
+        ]
+        self.assertTrue(all(fit.converged for fit in fits))
+        self.assertTrue(all(fit.n_components == 2 for fit in fits))
+        self.assertTrue(all(fit.grad_inf <= 1e-5 for fit in fits))
+        objectives = [fit.objective for fit in fits]
+        self.assertAlmostEqual(max(objectives) - min(objectives), 0.0, places=6)
+        home = [predict_rates(fit, "A", "B", "League")["home_xg"] for fit in fits]
+        self.assertAlmostEqual(max(home) - min(home), 0.0, places=5)
 
 
 if __name__ == "__main__":

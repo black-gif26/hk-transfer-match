@@ -6,9 +6,25 @@ V0 in predict.py stays the default production calculation. This module fits
     log λ_away = intercept + attack_away + defence_home + competition
 
 Defence is a conceding effect: a higher value raises the opponent's expected goals.
-Attack and defence are centered at zero, and the most common competition in the
-fit is the reference level. Teams are shrunk toward those zeros with an L2 penalty.
+The most common competition in the fit is the reference level and is fixed at 0.
+Attack parameters sum to 0 and defence parameters sum to 0. Those constraints
+are the parameter domain: free coefficients multiply an orthonormal Helmert
+basis of the sum-to-zero subspace. The optimizer does not project after each step.
+Teams are shrunk toward those zeros with an L2 penalty.
 Matches on or after the cutoff are excluded, including same-day matches.
+
+Objective, as a sum rather than a mean. The Poisson log(y!) term does not depend
+on the parameters and is omitted.
+
+    L = Σ_i w_i (exp(η_home,i) - y_home,i η_home,i + exp(η_away,i) - y_away,i η_away,i)
+      + (l2 / 2) * (home_advantage² + Σ_teams attack² + Σ_teams defence²
+                    + Σ_{competitions except reference} competition²)
+
+w_i = 1 when decay is 0, and exp(-decay * days_before_cutoff) otherwise. Rows with
+days <= 0 are not in the fit. L2 is not multiplied by the number of matches or by
+the weight sum. The penalty is applied to the reconstructed attack and defence vectors, which
+already sum to zero. The training loss does not clip η.
+Prediction still clamps η to [ETA_MIN, ETA_MAX] when building scoreline markets.
 """
 
 from __future__ import annotations
@@ -16,10 +32,14 @@ from __future__ import annotations
 import csv
 import json
 import math
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+
+import numpy as np
+from scipy.optimize import minimize
 
 from ucl_pipeline.dedupe import dedupe
 from ucl_pipeline.features import build_features
@@ -43,7 +63,7 @@ PROB_FLOOR = 1e-15
 class V1Config:
     decays: tuple[float, ...] = (0.0, 0.0015, 0.004)
     l2_grid: tuple[float, ...] = (1.0, 4.0)
-    max_iter: int = 200
+    max_iter: int = 2000
     tol: float = 1e-5
     goal_limit: int = 10
     validation_season: str = "2024-25"
@@ -68,6 +88,16 @@ class PoissonFit:
     converged: bool
     max_abs_step: float
     weights_sum: float
+    objective: float
+    grad_inf: float
+    status: int
+    message: str
+    runtime_seconds: float
+    bound_hits: int
+    clip_hits: int
+    n_components: int
+    component_sizes: tuple[int, ...]
+    nfev: int
 
 
 def eligible_matches(matches: list[Match]) -> list[Match]:
@@ -96,8 +126,70 @@ def _clamp_eta(value: float) -> float:
     return value
 
 
-def fit_poisson(matches: list[Match], cutoff: date, decay: float, l2: float, config: V1Config) -> PoissonFit:
-    """Weighted penalised Poisson scoring, using only matches dated before cutoff."""
+@dataclass
+class _Design:
+    teams: list[str]
+    competitions: list[str]
+    team_counts: dict[str, int]
+    team_comps: dict[str, set[str]]
+    home_ix: np.ndarray
+    away_ix: np.ndarray
+    comp_ix: np.ndarray
+    yh: np.ndarray
+    ya: np.ndarray
+    weights: np.ndarray
+    weight_sum: float
+    mean_log_rate: float
+    component_sizes: tuple[int, ...]
+    team_basis: np.ndarray
+
+    @property
+    def n_teams(self) -> int:
+        return len(self.teams)
+
+    @property
+    def n_comps(self) -> int:
+        return len(self.competitions)
+
+    @property
+    def n_free_teams(self) -> int:
+        return max(self.n_teams - 1, 0)
+
+    @property
+    def dim(self) -> int:
+        return 2 + 2 * self.n_free_teams + max(self.n_comps - 1, 0)
+
+
+def _sum_zero_basis(n_teams: int) -> np.ndarray:
+    """Orthonormal columns that each sum to zero. Empty when there is one team."""
+    basis = np.zeros((n_teams, max(n_teams - 1, 0)), dtype=np.float64)
+    for column in range(n_teams - 1):
+        scale = math.sqrt((column + 1) * (column + 2))
+        basis[: column + 1, column] = 1.0 / scale
+        basis[column + 1, column] = -(column + 1) / scale
+    return basis
+
+
+def _components(n_teams: int, home_ix: np.ndarray, away_ix: np.ndarray) -> tuple[int, ...]:
+    parent = list(range(n_teams))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for home, away in zip(home_ix.tolist(), away_ix.tolist()):
+        left, right = find(home), find(away)
+        if left != right:
+            parent[right] = left
+    sizes: dict[int, int] = defaultdict(int)
+    for index in range(n_teams):
+        sizes[find(index)] += 1
+    return tuple(sorted(sizes.values(), reverse=True))
+
+
+def _prepare(matches: list[Match], cutoff: date, decay: float) -> _Design:
     rows = [match for match in eligible_matches(matches) if match.date < cutoff]
     if not rows:
         raise ValueError(f"no eligible matches before {cutoff.isoformat()}")
@@ -114,156 +206,232 @@ def fit_poisson(matches: list[Match], cutoff: date, decay: float, l2: float, con
     competitions = sorted(comp_counts, key=lambda name: (-comp_counts[name], name))
     team_index = {name: index for index, name in enumerate(teams)}
     comp_index = {name: index for index, name in enumerate(competitions)}
-    home_ix = [team_index[match.home_team] for match in rows]
-    away_ix = [team_index[match.away_team] for match in rows]
-    comp_ix = [comp_index[match.competition] for match in rows]
-    yh = [match.home_goals or 0 for match in rows]
-    ya = [match.away_goals or 0 for match in rows]
-    weights = [time_weight(match.date, cutoff, decay) for match in rows]
-    n_teams = len(teams)
-    n_comps = len(competitions)
-    attack = [0.0] * n_teams
-    defence = [0.0] * n_teams
-    comp = [0.0] * n_comps
-    weight_sum = sum(weights)
-    goal_sum = sum(weights[i] * (yh[i] + ya[i]) for i in range(len(rows)))
-    intercept = math.log(max(goal_sum / (2.0 * weight_sum), 0.05))
-    home_adv = 0.0
+    home_ix = np.array([team_index[match.home_team] for match in rows], dtype=np.int64)
+    away_ix = np.array([team_index[match.away_team] for match in rows], dtype=np.int64)
+    weights = np.array([time_weight(match.date, cutoff, decay) for match in rows], dtype=np.float64)
+    weight_sum = float(weights.sum())
+    yh = np.array([match.home_goals or 0 for match in rows], dtype=np.float64)
+    ya = np.array([match.away_goals or 0 for match in rows], dtype=np.float64)
+    goal_sum = float(np.sum(weights * (yh + ya)))
+    return _Design(
+        teams=teams,
+        competitions=competitions,
+        team_counts=dict(team_counts),
+        team_comps={team: set(comps) for team, comps in team_comps.items()},
+        home_ix=home_ix,
+        away_ix=away_ix,
+        comp_ix=np.array([comp_index[match.competition] for match in rows], dtype=np.int64),
+        yh=yh,
+        ya=ya,
+        weights=weights,
+        weight_sum=weight_sum,
+        mean_log_rate=math.log(max(goal_sum / (2.0 * weight_sum), 0.05)),
+        component_sizes=_components(len(teams), home_ix, away_ix),
+        team_basis=_sum_zero_basis(len(teams)),
+    )
 
-    def _project(attack_now: list[float], defence_now: list[float], comp_now: list[float]) -> tuple[list[float], list[float], list[float]]:
-        mean_attack = sum(attack_now) / n_teams
-        mean_defence = sum(defence_now) / n_teams
-        projected_comp = comp_now[:]
-        projected_comp[0] = 0.0
-        return (
-            [value - mean_attack for value in attack_now],
-            [value - mean_defence for value in defence_now],
-            projected_comp,
-        )
 
-    def _loss(intercept_now: float, home_now: float, attack_now: list[float], defence_now: list[float], comp_now: list[float]) -> float:
-        total = 0.5 * l2 * home_now * home_now
-        total += 0.5 * l2 * sum(value * value for value in attack_now)
-        total += 0.5 * l2 * sum(value * value for value in defence_now)
-        total += 0.5 * l2 * sum(value * value for value in comp_now[1:])
-        for i, weight in enumerate(weights):
-            home = home_ix[i]
-            away = away_ix[i]
-            competition = comp_ix[i]
-            eta_home = _clamp_eta(intercept_now + home_now + attack_now[home] + defence_now[away] + comp_now[competition])
-            eta_away = _clamp_eta(intercept_now + attack_now[away] + defence_now[home] + comp_now[competition])
-            total += weight * (
-                math.exp(eta_home)
-                - yh[i] * eta_home
-                + math.exp(eta_away)
-                - ya[i] * eta_away
-            )
-        return total
+def _unpack(design: _Design, theta: np.ndarray) -> tuple[float, float, np.ndarray, np.ndarray, np.ndarray]:
+    free = design.n_free_teams
+    intercept = float(theta[0])
+    home = float(theta[1])
+    if free:
+        attack = design.team_basis @ theta[2 : 2 + free]
+        defence = design.team_basis @ theta[2 + free : 2 + 2 * free]
+    else:
+        attack = np.zeros(design.n_teams, dtype=np.float64)
+        defence = np.zeros(design.n_teams, dtype=np.float64)
+    comp = np.zeros(design.n_comps, dtype=np.float64)
+    comp_free = theta[2 + 2 * free :]
+    if comp_free.size:
+        comp[1:] = comp_free
+    return intercept, home, attack, defence, comp
 
-    attack, defence, comp = _project(attack, defence, comp)
-    current_loss = _loss(intercept, home_adv, attack, defence, comp)
-    converged = False
-    max_step = 1.0
-    iteration = 0
-    for iteration in range(1, config.max_iter + 1):
-        g_int = g_ha = h_int = h_ha = 0.0
-        g_att = [0.0] * n_teams
-        h_att = [l2] * n_teams
-        g_def = [0.0] * n_teams
-        h_def = [l2] * n_teams
-        g_comp = [0.0] * n_comps
-        h_comp = [l2] * n_comps
-        for i, weight in enumerate(weights):
-            home = home_ix[i]
-            away = away_ix[i]
-            competition = comp_ix[i]
-            eta_home = _clamp_eta(intercept + home_adv + attack[home] + defence[away] + comp[competition])
-            eta_away = _clamp_eta(intercept + attack[away] + defence[home] + comp[competition])
-            lam_home = math.exp(eta_home)
-            lam_away = math.exp(eta_away)
-            grad_home = weight * (lam_home - yh[i])
-            grad_away = weight * (lam_away - ya[i])
-            hess_home = weight * lam_home
-            hess_away = weight * lam_away
-            g_int += grad_home + grad_away
-            h_int += hess_home + hess_away
-            g_ha += grad_home
-            h_ha += hess_home
-            g_att[home] += grad_home
-            h_att[home] += hess_home
-            g_att[away] += grad_away
-            h_att[away] += hess_away
-            g_def[away] += grad_home
-            h_def[away] += hess_home
-            g_def[home] += grad_away
-            h_def[home] += hess_away
-            g_comp[competition] += grad_home + grad_away
-            h_comp[competition] += hess_home + hess_away
-        g_ha += l2 * home_adv
-        h_ha += l2
-        for index in range(n_teams):
-            g_att[index] += l2 * attack[index]
-            g_def[index] += l2 * defence[index]
-        for index in range(1, n_comps):
-            g_comp[index] += l2 * comp[index]
-        g_comp[0] = 0.0
 
-        def _newton(grad: float, hess: float) -> float:
-            if hess <= 1e-8:
-                return 0.0
-            return grad / hess
+def _evaluate(design: _Design, l2: float, theta: np.ndarray) -> tuple[float, np.ndarray, int]:
+    """Unclipped penalised loss and the gradient of the reduced parameter vector."""
+    intercept, home, attack, defence, comp = _unpack(design, theta)
+    eta_home = intercept + home + attack[design.home_ix] + defence[design.away_ix] + comp[design.comp_ix]
+    eta_away = intercept + attack[design.away_ix] + defence[design.home_ix] + comp[design.comp_ix]
+    clip_hits = int(np.sum((eta_home < ETA_MIN) | (eta_home > ETA_MAX)))
+    clip_hits += int(np.sum((eta_away < ETA_MIN) | (eta_away > ETA_MAX)))
+    lam_home = np.exp(eta_home)
+    lam_away = np.exp(eta_away)
+    residual_home = design.weights * (lam_home - design.yh)
+    residual_away = design.weights * (lam_away - design.ya)
+    data = float(np.sum(design.weights * (lam_home - design.yh * eta_home + lam_away - design.ya * eta_away)))
+    penalty = 0.5 * l2 * (
+        home * home
+        + float(np.dot(attack, attack))
+        + float(np.dot(defence, defence))
+        + float(np.dot(comp[1:], comp[1:]))
+    )
+    g_attack = np.bincount(design.home_ix, residual_home, minlength=design.n_teams)
+    g_attack += np.bincount(design.away_ix, residual_away, minlength=design.n_teams)
+    g_attack += l2 * attack
+    g_defence = np.bincount(design.away_ix, residual_home, minlength=design.n_teams)
+    g_defence += np.bincount(design.home_ix, residual_away, minlength=design.n_teams)
+    g_defence += l2 * defence
+    g_comp = np.bincount(design.comp_ix, residual_home + residual_away, minlength=design.n_comps)
+    if design.n_comps > 1:
+        g_comp[1:] += l2 * comp[1:]
+    grad = np.empty(design.dim, dtype=np.float64)
+    grad[0] = float(np.sum(residual_home) + np.sum(residual_away))
+    grad[1] = float(np.sum(residual_home) + l2 * home)
+    free = design.n_free_teams
+    if free:
+        grad[2 : 2 + free] = design.team_basis.T @ g_attack
+        grad[2 + free : 2 + 2 * free] = design.team_basis.T @ g_defence
+    if design.n_comps > 1:
+        grad[2 + 2 * free :] = g_comp[1:]
+    return data + penalty, grad, clip_hits
 
-        step_int = _newton(g_int, h_int)
-        step_ha = _newton(g_ha, h_ha)
-        step_att = [_newton(g_att[index], h_att[index]) for index in range(n_teams)]
-        step_def = [_newton(g_def[index], h_def[index]) for index in range(n_teams)]
-        step_comp = [0.0] + [_newton(g_comp[index], h_comp[index]) for index in range(1, n_comps)]
-        accepted = False
-        alpha = 1.0
-        max_step = 0.0
-        for _attempt in range(8):
-            trial_attack, trial_defence, trial_comp = _project(
-                [attack[index] - alpha * step_att[index] for index in range(n_teams)],
-                [defence[index] - alpha * step_def[index] for index in range(n_teams)],
-                [comp[index] - alpha * step_comp[index] for index in range(n_comps)],
-            )
-            trial_intercept = intercept - alpha * step_int
-            trial_home = home_adv - alpha * step_ha
-            trial_loss = _loss(trial_intercept, trial_home, trial_attack, trial_defence, trial_comp)
-            if trial_loss <= current_loss + 1e-9:
-                max_step = abs(alpha * step_int)
-                max_step = max(max_step, abs(alpha * step_ha))
-                max_step = max(max_step, max(abs(alpha * value) for value in step_att))
-                max_step = max(max_step, max(abs(alpha * value) for value in step_def))
-                if n_comps > 1:
-                    max_step = max(max_step, max(abs(alpha * value) for value in step_comp[1:]))
-                intercept = trial_intercept
-                home_adv = trial_home
-                attack, defence, comp = trial_attack, trial_defence, trial_comp
-                current_loss = trial_loss
-                accepted = True
-                break
-            alpha *= 0.5
-        if not accepted or max_step < config.tol:
-            converged = accepted and max_step < config.tol
+
+def _polish(design: _Design, l2: float, theta: np.ndarray, tol: float) -> tuple[np.ndarray, int]:
+    """Coordinate Newton steps for gradients L-BFGS left above tol.
+
+    L-BFGS-B stops when the objective change falls below a relative function
+    tolerance. On the summed loss that can happen while one analytic derivative
+    is still just above tol, because the matching step is smaller than a unit
+    in the last place of the loss. A step is kept only when the loss does not
+    increase.
+    """
+    current = np.array(theta, dtype=np.float64, copy=True)
+    used = 0
+    for sweep in range(1, 9):
+        loss, grad, _hits = _evaluate(design, l2, current)
+        hot = np.flatnonzero(np.abs(grad) > tol)
+        if hot.size == 0:
             break
+        moved = False
+        for index in hot[np.argsort(-np.abs(grad[hot]))]:
+            slope = float(grad[index])
+            probe = 1e-6
+            up = current.copy()
+            up[index] += probe
+            loss_up, _gradient, _hits = _evaluate(design, l2, up)
+            curvature = 2.0 * ((loss_up - loss) - slope * probe) / probe**2
+            if not math.isfinite(curvature) or curvature <= 1e-8:
+                continue
+            step = slope / curvature
+            if abs(step) > 1e-3:
+                continue
+            trial = current.copy()
+            trial[index] -= step
+            trial_loss, _gradient, _hits = _evaluate(design, l2, trial)
+            if trial_loss <= loss + 1e-12:
+                current = trial
+                loss = trial_loss
+                moved = True
+                loss, grad, _hits = _evaluate(design, l2, current)
+        used = sweep
+        if not moved:
+            break
+    return current, used
+
+
+def initial_theta(matches: list[Match], cutoff: date, decay: float, kind: str = "mean_rate") -> np.ndarray:
+    """Deterministic reduced-parameter starts. 'mean_rate' is the fit default."""
+    design = _prepare(matches, cutoff, decay)
+    theta = np.zeros(design.dim, dtype=np.float64)
+    if kind == "zeros":
+        return theta
+    if kind == "mean_rate":
+        theta[0] = design.mean_log_rate
+        return theta
+    if kind == "shifted":
+        theta[0] = design.mean_log_rate
+        theta[1] = 0.25
+        free = design.n_free_teams
+        for index in range(free):
+            sign = 1.0 if index % 2 == 0 else -1.0
+            theta[2 + index] = 0.05 * sign
+            theta[2 + free + index] = -0.04 * sign
+        return theta
+    raise ValueError(f"unknown start {kind}")
+
+
+def objective_and_gradient(
+    matches: list[Match], cutoff: date, decay: float, l2: float, theta: np.ndarray
+) -> tuple[float, np.ndarray]:
+    """Loss and analytic reduced gradient at theta. Used by finite-difference checks."""
+    loss, grad, _hits = _evaluate(_prepare(matches, cutoff, decay), l2, np.asarray(theta, dtype=np.float64))
+    return loss, grad
+
+
+def fit_poisson(
+    matches: list[Match],
+    cutoff: date,
+    decay: float,
+    l2: float,
+    config: V1Config,
+    x0: np.ndarray | None = None,
+) -> PoissonFit:
+    """Weighted penalised Poisson scoring, using only matches dated before cutoff."""
+    design = _prepare(matches, cutoff, decay)
+    start = initial_theta(matches, cutoff, decay, "mean_rate") if x0 is None else np.asarray(x0, dtype=np.float64)
+    if start.shape != (design.dim,):
+        raise ValueError(f"x0 has shape {start.shape}, expected {(design.dim,)}")
+    last_step = 0.0
+    previous: np.ndarray | None = None
+
+    def fun(theta: np.ndarray) -> tuple[float, np.ndarray]:
+        nonlocal last_step, previous
+        current = np.asarray(theta, dtype=np.float64)
+        if previous is not None:
+            last_step = float(np.max(np.abs(current - previous)))
+        previous = current.copy()
+        loss, grad, _hits = _evaluate(design, l2, current)
+        return loss, grad
+
+    started = time.perf_counter()
+    result = minimize(
+        fun,
+        start,
+        method="L-BFGS-B",
+        jac=True,
+        options={"maxiter": config.max_iter, "gtol": config.tol, "ftol": 1e-16},
+    )
+    runtime = time.perf_counter() - started
+    solution = np.asarray(result.x, dtype=np.float64)
+    polish_sweeps = 0
+    if result.success:
+        solution, polish_sweeps = _polish(design, l2, solution, config.tol)
+    loss, grad, clip_hits = _evaluate(design, l2, solution)
+    grad_inf = float(np.max(np.abs(grad))) if grad.size else 0.0
+    finite = math.isfinite(loss) and math.isfinite(grad_inf)
+    converged = bool(result.success) and finite and grad_inf <= config.tol
+    message = str(result.message)
+    if polish_sweeps:
+        message = f"{message}; coordinate polish sweeps={polish_sweeps}"
+    intercept, home, attack, defence, comp = _unpack(design, solution)
     return PoissonFit(
         cutoff=cutoff,
         decay=decay,
         l2=l2,
         intercept=intercept,
-        home_advantage=home_adv,
-        attack=dict(zip(teams, attack)),
-        defence=dict(zip(teams, defence)),
-        competition=dict(zip(competitions, comp)),
-        reference_competition=competitions[0],
-        team_counts=dict(team_counts),
-        team_competitions={team: set(comps) for team, comps in team_comps.items()},
-        n_matches=len(rows),
-        iterations=iteration,
+        home_advantage=home,
+        attack=dict(zip(design.teams, attack.tolist())),
+        defence=dict(zip(design.teams, defence.tolist())),
+        competition=dict(zip(design.competitions, comp.tolist())),
+        reference_competition=design.competitions[0],
+        team_counts=design.team_counts,
+        team_competitions=design.team_comps,
+        n_matches=int(design.home_ix.size),
+        iterations=int(result.nit),
         converged=converged,
-        max_abs_step=max_step,
-        weights_sum=weight_sum,
+        max_abs_step=last_step,
+        weights_sum=design.weight_sum,
+        objective=loss,
+        grad_inf=grad_inf,
+        status=int(result.status),
+        message=message,
+        runtime_seconds=runtime,
+        bound_hits=0,
+        clip_hits=clip_hits,
+        n_components=len(design.component_sizes),
+        component_sizes=design.component_sizes,
+        nfev=int(result.nfev),
     )
 
 
@@ -454,6 +622,12 @@ def _score_period(
                 "v1_flags": ",".join(v1.get("flags", [])),
                 "v1_tail": v1.get("tail", ""),
                 "converged": int(fit.converged),
+                "grad_inf": fit.grad_inf,
+                "fit_status": fit.status,
+                "fit_message": fit.message,
+                "objective": fit.objective,
+                "fit_iterations": fit.iterations,
+                "n_components": fit.n_components,
             }
             if v0_ok:
                 row.update(
@@ -511,11 +685,28 @@ def select_and_evaluate(matches: list[Match], config: V1Config | None = None) ->
             scored = _score_period(history, validation, decay, l2, config)
             compared = _comparable(scored)
             metrics = _metrics(compared, "v1")
-            entry = {"decay": decay, "l2": l2, "metrics": metrics, "rows": scored}
-            grid.append({"decay": decay, "l2": l2, "n": metrics.get("n", 0), "log_loss_1x2": metrics.get("log_loss_1x2")})
+            failed = _failed_fits(scored)
+            entry = {
+                "decay": decay,
+                "l2": l2,
+                "metrics": metrics,
+                "rows": scored,
+                "fits_converged": not failed and bool(scored),
+            }
+            grid.append(
+                {
+                    "decay": decay,
+                    "l2": l2,
+                    "n": metrics.get("n", 0),
+                    "log_loss_1x2": metrics.get("log_loss_1x2"),
+                    "fits_converged": entry["fits_converged"],
+                    "max_grad_inf": max((row["grad_inf"] for row in scored), default=None),
+                    "failed_fits": failed,
+                }
+            )
             if metrics.get("n", 0) == 0:
                 continue
-            if best is None or metrics["log_loss_1x2"] < best["metrics"]["log_loss_1x2"]:
+            if best is None or _prefer(entry, best):
                 best = entry
     if best is None:
         raise ValueError("validation produced no comparable fixtures")
@@ -545,11 +736,41 @@ def select_and_evaluate(matches: list[Match], config: V1Config | None = None) ->
             "low_history": sum("low_history" in row["v1_flags"] for row in test_rows),
             "cross_league": sum("cross_league_strength" in row["v1_flags"] for row in test_rows),
             "fits_converged": all(row["converged"] for row in test_rows),
+            "max_grad_inf": max(row["grad_inf"] for row in test_rows),
+            "failed_fits": _failed_fits(test_rows),
         },
         "validation_rows": best["rows"],
         "test_rows": test_rows,
         "fit": final_fit,
     }
+
+
+def _failed_fits(rows: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    failed = []
+    for row in rows:
+        if row["converged"] or row["cutoff"] in seen:
+            continue
+        seen.add(row["cutoff"])
+        failed.append(
+            {
+                "cutoff": row["cutoff"],
+                "status": row["fit_status"],
+                "message": row["fit_message"],
+                "grad_inf": row["grad_inf"],
+                "objective": row["objective"],
+                "iterations": row["fit_iterations"],
+                "n_components": row["n_components"],
+            }
+        )
+    return failed
+
+
+def _prefer(entry: dict, best: dict) -> bool:
+    """Prefer a converged grid point, then a lower validation 1X2 log loss."""
+    if entry["fits_converged"] != best["fits_converged"]:
+        return entry["fits_converged"]
+    return entry["metrics"]["log_loss_1x2"] < best["metrics"]["log_loss_1x2"]
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
@@ -566,6 +787,12 @@ def _write_rows(path: Path, rows: list[dict]) -> None:
         "v1_ok",
         "v1_flags",
         "v1_tail",
+        "converged",
+        "grad_inf",
+        "fit_status",
+        "objective",
+        "fit_iterations",
+        "n_components",
         "home_xg_v0",
         "away_xg_v0",
         "home_xg_v1",
@@ -608,11 +835,24 @@ def _fit_payload(fit: PoissonFit) -> dict:
         "team_counts": fit.team_counts,
         "n_matches": fit.n_matches,
         "iterations": fit.iterations,
+        "nfev": fit.nfev,
         "converged": fit.converged,
+        "status": fit.status,
+        "message": fit.message,
+        "objective": fit.objective,
+        "grad_inf": fit.grad_inf,
         "max_abs_step": fit.max_abs_step,
+        "runtime_seconds": fit.runtime_seconds,
+        "bound_hits": fit.bound_hits,
+        "prediction_guard_hits": fit.clip_hits,
+        "training_loss_clipped": False,
+        "n_components": fit.n_components,
+        "component_sizes": list(fit.component_sizes),
         "mean_attack": sum(attacks) / len(attacks),
         "mean_defence": sum(defences) / len(defences),
-        "min_rate_guard": {"eta_min": ETA_MIN, "eta_max": ETA_MAX},
+        "objective_scale": "sum of weighted Poisson terms plus (l2/2) * squared parameters; not a mean",
+        "l2_convention": "(l2/2) on home advantage, every attack, every defence, and non-reference competitions",
+        "min_rate_guard": {"eta_min": ETA_MIN, "eta_max": ETA_MAX, "applied_in_training_loss": False},
     }
 
 
@@ -641,7 +881,8 @@ def write_artifacts(result: dict, output_dir: Path, stamp: str | None = None) ->
         "",
         f"Test candidates: {test['n_candidates']}. Comparable: {test['n_comparable']}.",
         f"Coverage V0: {test['coverage_v0']:.3f}. Coverage V1: {test['coverage_v1']:.3f}.",
-        f"Fits converged: {test['fits_converged']}.",
+        f"Fits converged: {test['fits_converged']}. Max gradient infinity norm: {test['max_grad_inf']}.",
+        f"Failed fits: {json.dumps(test['failed_fits'])}.",
         "",
         "| Model | 1X2 log loss | 1X2 Brier | 1X2 accuracy | O/U log loss | BTTS log loss |",
         "| --- | --- | --- | --- | --- | --- |",
