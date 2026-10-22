@@ -21,7 +21,7 @@ from ucl_pipeline.poisson_v1 import (
     select_and_evaluate,
     time_weight,
 )
-from ucl_pipeline.shadow import write_shadow
+from ucl_pipeline.shadow import label_prediction, render_draft, write_shadow
 from ucl_pipeline.v1_audit import leakage_problems
 
 
@@ -176,6 +176,51 @@ class PoissonV1Tests(unittest.TestCase):
         payload = json.loads(text)
         self.assertEqual(payload["data_version"]["max_date"], "2024-05-02")
         self.assertLess(payload["fit"]["n_matches"], 3)
+
+    def test_europa_v1_is_experimental_and_unseen_teams_abstain(self):
+        fixture = _match(date(2026, 10, 22), "A", "B", None, None)
+        fixture = Match(
+            fixture.date, fixture.season, "UEFA Europa League", "", "A", "B", None, None, "uefa.com", 9, kickoff="00:45 HK"
+        )
+        labelled = label_prediction(fixture, {"abstain": 0, "reason": ""}, {"p_home": 0.5})
+        self.assertEqual(labelled["role"], "v1_experimental")
+        self.assertIn("reference_competition_level", labelled["warnings"])
+        unseen = label_prediction(fixture, {"abstain": 1, "reason": "unseen_team"}, {"p_home": ""})
+        self.assertEqual(unseen["role"], "abstain")
+        fallback = label_prediction(fixture, {"abstain": 1, "reason": "unseen_team"}, {"p_home": 0.4})
+        self.assertEqual(fallback["role"], "v0_fallback")
+        text = render_draft(
+            [
+                {
+                    "kickoff": "00:45 HK",
+                    "home_team": "A",
+                    "away_team": "B",
+                    "role": "v1_experimental",
+                    "p_home_v1": 0.5,
+                    "p_draw_v1": 0.25,
+                    "p_away_v1": 0.25,
+                    "p_over_v1": 0.6,
+                    "p_btts_v1": 0.55,
+                    "home_xg_v1": 1.7,
+                    "away_xg_v1": 1.1,
+                },
+                {
+                    "kickoff": "03:00 HK",
+                    "home_team": "C",
+                    "away_team": "D",
+                    "role": "abstain",
+                },
+            ],
+            {
+                "updated_at_hkt": "2026-10-22 16:00 香港時間",
+                "prediction_cutoff": "2026-10-22",
+                "data_version": {"sha256_12": "abc", "max_date": "2026-09-20"},
+                "source_summary": "齊全度未知",
+            },
+        )
+        self.assertIn("V1實驗", text)
+        self.assertIn("無法預測", text)
+        self.assertIn("不是賽果", text)
 
     def test_leakage_check_rejects_a_row_before_its_cutoff(self):
         row = {

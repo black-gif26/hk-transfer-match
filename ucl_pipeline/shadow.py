@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from ucl_pipeline import __version__
@@ -41,6 +41,92 @@ def data_version(matches: list[Match], cutoff: date) -> dict:
     }
 
 
+def _blank(value: object) -> bool:
+    return value in ("", None)
+
+
+def _pct(value: object) -> str:
+    return f"{float(value):.1%}"
+
+
+def label_prediction(fixture: Match, v1: dict, v0_row: dict) -> dict:
+    """Europa V1 is unvalidated. Unseen teams abstain. V0 is a labelled fallback."""
+    experimental = fixture.competition == "UEFA Europa League"
+    warnings = []
+    if v1["abstain"]:
+        if not _blank(v0_row.get("p_home")):
+            role = "v0_fallback"
+            warnings.append("v0_fallback")
+        else:
+            role = "abstain"
+            warnings.append(v1.get("reason") or "unseen_team")
+    else:
+        role = "v1_experimental" if experimental else "v1"
+        if experimental:
+            warnings.append("experimental_europa_unvalidated")
+            warnings.append("reference_competition_level")
+    return {"role": role, "warnings": warnings}
+
+
+def render_draft(rows: list[dict], meta: dict) -> str:
+    """Traditional Chinese pre-match report. Not a result and not a Telegram send."""
+    lines = [
+        "賽前預測（未開波，不是賽果）",
+        f"更新時間：{meta['updated_at_hkt']}",
+        f"預測截止：{meta['prediction_cutoff']}（當日及之後的比分不入模）",
+        f"資料版本：{meta['data_version']['sha256_12']}，最後有比分日期 {meta['data_version']['max_date']}",
+        "V1 凍結 decay=0.0015、L2=4。歐霸沒有用來選參數，V1 標明實驗。",
+        "歐霸評分水平用訓練參考聯賽，不是歐霸自己的入球水平。",
+        meta["source_summary"],
+        "",
+    ]
+    for row in rows:
+        lines.append(f"{row['kickoff']} {row['home_team']} vs {row['away_team']}")
+        if row["role"] == "abstain":
+            lines.append("無法預測（未知球隊）")
+        elif row["role"] == "v0_fallback":
+            lines.append(
+                "V1 無法使用。V0後備 "
+                f"主{_pct(row['p_home_v0'])} 和{_pct(row['p_draw_v0'])} 客{_pct(row['p_away_v0'])}｜"
+                f"大2.5 {_pct(row['p_over_v0'])}｜雙方 {_pct(row['p_btts_v0'])}｜"
+                f"預期 {float(row['home_xg_v0']):.2f}-{float(row['away_xg_v0']):.2f}"
+            )
+        else:
+            label = "V1實驗" if row["role"] == "v1_experimental" else "V1"
+            short = "｜近況少" if "low_history" in row.get("v1_flags", "") else ""
+            lines.append(
+                f"{label} 主{_pct(row['p_home_v1'])} 和{_pct(row['p_draw_v1'])} 客{_pct(row['p_away_v1'])}｜"
+                f"大2.5 {_pct(row['p_over_v1'])}｜雙方 {_pct(row['p_btts_v1'])}｜"
+                f"預期 {float(row['home_xg_v1']):.2f}-{float(row['away_xg_v1']):.2f}{short}"
+            )
+        lines.append("")
+    lines.append("警告：2026-09-20 之後的聯賽比分齊全度未知。未知球隊不預測。歐霸 V1 未經驗證。")
+    return "\n".join(lines).strip() + "\n"
+
+
+def split_draft(text: str, limit: int = 3500) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    current: list[str] = []
+    size = 0
+    for block in text.split("\n\n"):
+        piece = block.strip()
+        if not piece:
+            continue
+        addition = len(piece) + 2
+        if current and size + addition > limit:
+            parts.append("\n\n".join(current) + "\n")
+            current = [piece]
+            size = addition
+        else:
+            current.append(piece)
+            size += addition
+    if current:
+        parts.append("\n\n".join(current) + "\n")
+    return parts
+
+
 def shadow_rows(history: list[Match], fixtures: list[Match], on: date) -> tuple[dict, list[dict]]:
     """Refit frozen V1 on matches dated before `on`. Same-day rows stay out."""
     version = data_version(history, on)
@@ -50,9 +136,13 @@ def shadow_rows(history: list[Match], fixtures: list[Match], on: date) -> tuple[
     for fixture in fixtures:
         v0_row = v0[(fixture.date, fixture.home_team, fixture.away_team)]
         v1 = predict_rates(fit, fixture.home_team, fixture.away_team, fixture.competition)
+        labelled = label_prediction(fixture, v1, v0_row)
         row = {
             "date": fixture.date.isoformat(),
+            "kickoff": fixture.kickoff,
             "competition": fixture.competition,
+            "role": labelled["role"],
+            "warnings": ",".join(labelled["warnings"]),
             "home_team": fixture.home_team,
             "away_team": fixture.away_team,
             "model_version": MODEL_VERSION,
@@ -104,12 +194,44 @@ def shadow_rows(history: list[Match], fixtures: list[Match], on: date) -> tuple[
     return meta, rows
 
 
-def write_shadow(history: list[Match], fixtures: list[Match], on: date, output_dir: Path, stamp: str | None = None) -> Path:
+def write_shadow(
+    history: list[Match],
+    fixtures: list[Match],
+    on: date,
+    output_dir: Path,
+    stamp: str | None = None,
+    source_summary: str = "",
+    chat_id: str = "",
+    updated_at_hkt: str = "",
+    teams: list[dict] | None = None,
+) -> Path:
     meta, rows = shadow_rows(history, fixtures, on)
     stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    meta["source_summary"] = source_summary
+    meta["updated_at_hkt"] = updated_at_hkt or stamp
+    meta["teams"] = teams or []
     folder = output_dir / "shadow" / stamp
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "fit.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    draft = render_draft(rows, meta) if rows else ""
+    parts = split_draft(draft) if draft else []
+    (folder / "draft.txt").write_text(draft, encoding="utf-8")
+    run_id = f"shadow-{on.isoformat()}-{meta['data_version']['sha256_12']}-d{FROZEN_DECAY}-l{FROZEN_L2}"
+    (folder / "send.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "status": "pending_approval",
+                "chat_id": chat_id,
+                "sent": False,
+                "message_ids": [],
+                "part_count": len(parts),
+                "parts": parts,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     fields = list(rows[0]) if rows else [
         "date", "competition", "home_team", "away_team", "model_version", "data_version",
         "fit_cutoff", "fit_converged", "grad_inf", "v1_flags", "v1_reason",
@@ -121,7 +243,64 @@ def write_shadow(history: list[Match], fixtures: list[Match], on: date, output_d
     return folder
 
 
-def run_shadow(cache_dir: Path, output_dir: Path, on: date) -> Path:
+def run_shadow(cache_dir: Path, output_dir: Path, on: date, *, refresh: bool = False, chat_id: str = "") -> Path:
+    from ucl_pipeline.sources import CL_API, _dir_names, load_football_json
+
+    source_notes: list[dict] = []
+    refreshed = load_football_json(cache_dir, refresh, source_notes, seasons=("2026-27",), keep_unplayed=True)
+    cl_status, _cl_names = _dir_names(CL_API.format(season="2026-27"), cache_dir, refresh)
     history, unplayed, _notes = load_prediction_matches(cache_dir, refresh=False)
-    fixtures = _merge_fixtures(fixtures_for(unplayed, on), web_fixtures_on(on))
-    return write_shadow(history, fixtures, on, output_dir)
+    web = web_fixtures_on(on)
+    fixtures = _merge_fixtures(fixtures_for(unplayed, on), web)
+    order = {(match.home_team, match.away_team): index for index, match in enumerate(web)}
+    fixtures.sort(key=lambda match: (match.kickoff, order.get((match.home_team, match.away_team), 999)))
+    played = [match for match in refreshed if match.goals_pair()]
+    last_scored = max((match.date for match in played), default=None)
+    files = [note for note in source_notes if note.get("files_used") is not None]
+    errors = [note for note in source_notes if note.get("status") not in (None, 200)]
+    summary = (
+        f"football.json 2026-27 重新下載後最後有比分 {last_scored.isoformat() if last_scored else '無'}。"
+        f"檔案 {', '.join(files[0]['files_used']) if files else '無'}。"
+        f"歐冠 2026-27 目錄 {cl_status}。之後賽果齊全度未知。"
+    )
+    if errors:
+        summary += " 下載錯誤：" + ", ".join(f"{note.get('status')} {note.get('url')}" for note in errors)
+    gap = [
+        match
+        for match in refreshed
+        if match.goals_pair() is None and last_scored is not None and last_scored < match.date < on
+    ]
+    summary += f" 截止前未填比分場數 {len(gap)}。"
+    teams = _team_latest(history, fixtures, on)
+    updated = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M 香港時間")
+    return write_shadow(
+        history,
+        fixtures,
+        on,
+        output_dir,
+        source_summary=summary,
+        chat_id=chat_id,
+        updated_at_hkt=updated,
+        teams=teams,
+    )
+
+
+def _team_latest(history: list[Match], fixtures: list[Match], cutoff: date) -> list[dict]:
+    wanted: list[str] = []
+    for fixture in fixtures:
+        for team in (fixture.home_team, fixture.away_team):
+            if team not in wanted:
+                wanted.append(team)
+    played = [match for match in eligible_matches(history) if match.date < cutoff]
+    rows = []
+    for team in wanted:
+        dates = [match.date for match in played if match.home_team == team or match.away_team == team]
+        rows.append(
+            {
+                "team": team,
+                "latest_scored": max(dates).isoformat() if dates else None,
+                "n_before_cutoff": len(dates),
+                "completeness": "unknown",
+            }
+        )
+    return rows

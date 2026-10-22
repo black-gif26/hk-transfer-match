@@ -59,6 +59,8 @@ def shadow_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", required=True, help="prediction cutoff YYYY-MM-DD; matches on that day stay out")
     parser.add_argument("--output", type=Path, default=Path("output"))
     parser.add_argument("--cache", type=Path, default=Path("cache"))
+    parser.add_argument("--refresh", action="store_true", help="redownload 2026-27 football.json before the fit")
+    parser.add_argument("--chat-id", default="", help="stored for a later approved send; this command does not send")
     return parser
 
 
@@ -73,7 +75,13 @@ def main(argv: list[str] | None = None) -> None:
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "shadow":
         args = shadow_parser().parse_args(args_list[1:])
-        folder = run_shadow(args.cache, args.output, date.fromisoformat(args.date))
+        folder = run_shadow(
+            args.cache,
+            args.output,
+            date.fromisoformat(args.date),
+            refresh=args.refresh,
+            chat_id=args.chat_id,
+        )
         print(f"wrote {folder.resolve()}")
         return
     if args_list and args_list[0] == "v1-audit":
