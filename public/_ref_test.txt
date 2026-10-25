@@ -1,0 +1,1 @@
+$JSONFILE:/tmp/app.js.content

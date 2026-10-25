@@ -1,0 +1,16 @@
+{
+  "name": "hk-transfer-match",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-13",
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  }
+}
